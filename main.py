@@ -1,97 +1,103 @@
 import telebot
-from telebot.types import Message
+import requests
 import time
+from telebot.types import Message
 
-# التوكن الجديد مالتك
 TOKEN = '8159446452:AAGrkJbtEFoKgXab19l7tX36SDTowRvPxB4'
 bot = telebot.TeleBot(TOKEN)
 
 groups_data = {}
 
-def get_group_data(chat_id):
-    if chat_id not in groups_data:
-        groups_data[chat_id] = {
-            'locked': False, 'welcome': True, 'admins': [], 'vips': []
-        }
-    return groups_data[chat_id]
+def get_data(cid):
+    if cid not in groups_data:
+        groups_data[cid] = {'locked': False, 'admins': [], 'vips': []}
+    return groups_data[cid]
 
-def is_owner(chat_id, user_id):
+def is_admin(m):
     try:
-        member = bot.get_chat_member(chat_id, user_id)
-        return member.status == 'creator'
-    except: return False
+        status = bot.get_chat_member(m.chat.id, m.from_user.id).status
+        if status in ['creator', 'administrator'] or m.from_user.id in get_data(m.chat.id)['admins']:
+            return True
+    except: pass
+    return False
 
-def is_admin(chat_id, user_id):
-    if is_owner(chat_id, user_id): return True
-    return user_id in get_group_data(chat_id)['admins']
+# 1. حذف رسائل النظام (دخول وخروج)
+@bot.message_handler(content_types=['new_chat_members', 'left_chat_member'])
+def clean_system_messages(m):
+    try:
+        bot.delete_message(m.chat.id, m.message_id)
+    except: pass
 
-# --- ميزة كشف تعديل الرسائل ---
+# 2. كشف التعديل
 @bot.edited_message_handler(func=lambda m: True)
-def handle_edited_message(message: Message):
-    if message.chat.type in ['group', 'supergroup']:
-        bot.reply_to(message, f"كشفته! القفاص {message.from_user.first_name} عدل رسالته 🕵️‍♂️")
+def handle_edit(m):
+    bot.reply_to(m, f"عدل رسالته القفاص {m.from_user.first_name} 🕵️")
 
-# --- الردود التفاعلية ---
-@bot.message_handler(func=lambda m: True, content_types=['text'])
-def handle_text(message: Message):
-    text = message.text
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    data = get_group_data(chat_id)
+# 3. معالج الرسائل والأوامر
+@bot.message_handler(func=lambda m: True)
+def handle_all(m):
+    text = m.text
+    cid = m.chat.id
+    uid = m.from_user.id
+    data = get_data(cid)
 
-    # 1. ردود السلام والتحية
-    greetings = {
-        "السلام عليكم": "وعليكم السلام ورحمة الله وبركاته، نورتنا! ❤️",
-        "شلونك": "بخير إذا أنت بخير، أسأل عليك يا طيب! ✨",
-        "هلا": "هلا بيك وبجيتك، نورت الكروب 🌹",
-        "شلونكم": "بخير وعافية، أنت شلونك؟",
-        "منو المالك": "المالك هو تاج راسي منشئ الكروب 👑"
-    }
-    
-    if text in greetings:
-        bot.reply_to(message, greetings[text])
-        return
+    # ردود تفاعلية (بدون فوارز)
+    if text == "السلام عليكم": bot.reply_to(m, "وعليكم السلام نورت")
+    elif text == "شلونك": bot.reply_to(m, "بخير اسأل عنك")
+    elif text == "هلا": bot.reply_to(m, "هلا بيك")
 
-    # 2. أوامر الإدارة والقفل
-    if text == "قفل الشات":
-        if is_admin(chat_id, user_id):
-            data['locked'] = True
-            bot.reply_to(message, "🔒 تم قفل الشات بنجاح.")
-        return
-    
-    if text == "فتح الشات":
-        if is_admin(chat_id, user_id):
-            data['locked'] = False
-            bot.reply_to(message, "🔓 تم فتح الشات، انطلقوا.")
-        return
+    # نظام الرتب (بالرد)
+    if m.reply_to_message:
+        target_id = m.reply_to_message.from_user.id
+        target_name = m.reply_to_message.from_user.first_name
+        
+        if text == "رفع مدير" and is_admin(m):
+            if target_id not in data['admins']: data['admins'].append(target_id)
+            bot.reply_to(m, f"تم رفع {target_name} مدير")
+        elif text == "رفع مميز" and is_admin(m):
+            if target_id not in data['vips']: data['vips'].append(target_id)
+            bot.reply_to(m, f"تم رفع {target_name} مميز")
 
-    # 3. أمر المسح
-    if text.startswith("مسح "):
-        if is_admin(chat_id, user_id):
-            try:
-                num = int(text.split()[1])
-                for i in range(num + 1):
-                    bot.delete_message(chat_id, message.message_id - i)
-            except: pass
-        return
+    # نظام المسح
+    if text.startswith("مسح ") and is_admin(m):
+        try:
+            num = int(text.split()[1])
+            # حذف الرسائل دفعة واحدة
+            for i in range(num + 1):
+                try: bot.delete_message(cid, m.message_id - i)
+                except: pass
+        except: pass
 
-    # 4. حماية الشات المقفول
-    if data['locked'] and not is_admin(chat_id, user_id):
-        if user_id not in data['vips']:
-            bot.delete_message(chat_id, message.message_id)
+    # قفل وفتح الشات
+    if text == "قفل الشات" and is_admin(m):
+        data['locked'] = True
+        bot.reply_to(m, "تم قفل الشات")
+    elif text == "فتح الشات" and is_admin(m):
+        data['locked'] = False
+        bot.reply_to(m, "تم فتح الشات")
 
-# --- الترحيب بالاعضاء الجدد ---
-@bot.message_handler(content_types=['new_chat_members'])
-def welcome(message: Message):
-    if get_group_data(message.chat.id)['welcome']:
-        for member in message.new_chat_members:
-            bot.send_message(message.chat.id, f"يا هلا بـ {member.first_name} نورت كروبنا الجديد! 🌟")
+    # حماية الشات المقفول
+    if data['locked'] and not is_admin(m) and uid not in data['vips']:
+        try: bot.delete_message(cid, m.message_id)
+        except: pass
 
-# تشغيل البوت مع ضمان الاستمرارية
-print("البوت شغال حالياً...")
+    # --- ميزة التحميل من تيك توك ---
+    if "tiktok.com" in text:
+        msg = bot.reply_to(m, "جاري تحميل الفيديو... ⏳")
+        try:
+            # استخدام API مجاني للتحميل
+            api_url = f"https://api.tiklydown.eu.org/api/download?url={text}"
+            res = requests.get(api_url).json()
+            video_url = res['video']['noWatermark']
+            bot.send_video(cid, video_url, reply_to_message_id=m.message_id)
+            bot.delete_message(cid, msg.message_id)
+        except:
+            bot.edit_message_text("عذراً، حدث خطأ أثناء التحميل. تأكد من الرابط.", cid, msg.message_id)
+
+# تشغيل البوت
+print("البوت شغال...")
 while True:
     try:
-        bot.polling(none_stop=True, interval=0, timeout=20)
-    except Exception as e:
-        print(f"حدث خطأ: {e}")
+        bot.polling(none_stop=True)
+    except:
         time.sleep(5)
