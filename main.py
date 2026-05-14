@@ -1,10 +1,13 @@
 import telebot
 import requests
 import time
-from telebot.types import Message
 
+# التوكن مالتك
 TOKEN = '8159446452:AAGrkJbtEFoKgXab19l7tX36SDTowRvPxB4'
 bot = telebot.TeleBot(TOKEN)
+
+# ايدي حسابك التليجرام (حتى تبقى مالك ثابت ما تنحذف رتبتك)
+OWNER_ID = 5489814144 # استبدل هذا الرقم بايدي حسابك اذا كان مختلف
 
 groups_data = {}
 
@@ -15,33 +18,34 @@ def get_data(cid):
 
 def is_admin(m):
     try:
+        if m.from_user.id == OWNER_ID: return True
         status = bot.get_chat_member(m.chat.id, m.from_user.id).status
         if status in ['creator', 'administrator'] or m.from_user.id in get_data(m.chat.id)['admins']:
             return True
     except: pass
     return False
 
-# 1. حذف رسائل النظام (دخول وخروج)
+# حذف رسائل النظام (انضم وغادر)
 @bot.message_handler(content_types=['new_chat_members', 'left_chat_member'])
-def clean_system_messages(m):
-    try:
-        bot.delete_message(m.chat.id, m.message_id)
+def clean_system(m):
+    try: bot.delete_message(m.chat.id, m.message_id)
     except: pass
 
-# 2. كشف التعديل
+# كشف التعديل
 @bot.edited_message_handler(func=lambda m: True)
 def handle_edit(m):
-    bot.reply_to(m, f"عدل رسالته القفاص {m.from_user.first_name} 🕵️")
+    try: bot.reply_to(m, f"عدل رسالته القفاص {m.from_user.first_name} 🕵️")
+    except: pass
 
-# 3. معالج الرسائل والأوامر
 @bot.message_handler(func=lambda m: True)
 def handle_all(m):
     text = m.text
+    if not text: return
     cid = m.chat.id
     uid = m.from_user.id
     data = get_data(cid)
 
-    # ردود تفاعلية (بدون فوارز)
+    # ردود سريعة
     if text == "السلام عليكم": bot.reply_to(m, "وعليكم السلام نورت")
     elif text == "شلونك": bot.reply_to(m, "بخير اسأل عنك")
     elif text == "هلا": bot.reply_to(m, "هلا بيك")
@@ -57,18 +61,23 @@ def handle_all(m):
         elif text == "رفع مميز" and is_admin(m):
             if target_id not in data['vips']: data['vips'].append(target_id)
             bot.reply_to(m, f"تم رفع {target_name} مميز")
+        elif text == "تنزيل مدير" and is_admin(m):
+            if target_id in data['admins']: data['admins'].remove(target_id)
+            bot.reply_to(m, f"تم تنزيل {target_name}")
+        elif text == "تنزيل مميز" and is_admin(m):
+            if target_id in data['vips']: data['vips'].remove(target_id)
+            bot.reply_to(m, f"تم تنزيل {target_name}")
 
-    # نظام المسح
+    # المسح
     if text.startswith("مسح ") and is_admin(m):
         try:
             num = int(text.split()[1])
-            # حذف الرسائل دفعة واحدة
             for i in range(num + 1):
                 try: bot.delete_message(cid, m.message_id - i)
                 except: pass
         except: pass
 
-    # قفل وفتح الشات
+    # قفل الشات
     if text == "قفل الشات" and is_admin(m):
         data['locked'] = True
         bot.reply_to(m, "تم قفل الشات")
@@ -81,23 +90,15 @@ def handle_all(m):
         try: bot.delete_message(cid, m.message_id)
         except: pass
 
-    # --- ميزة التحميل من تيك توك ---
+    # تحميل تيك توك
     if "tiktok.com" in text:
-        msg = bot.reply_to(m, "جاري تحميل الفيديو... ⏳")
         try:
-            # استخدام API مجاني للتحميل
-            api_url = f"https://api.tiklydown.eu.org/api/download?url={text}"
-            res = requests.get(api_url).json()
-            video_url = res['video']['noWatermark']
-            bot.send_video(cid, video_url, reply_to_message_id=m.message_id)
-            bot.delete_message(cid, msg.message_id)
-        except:
-            bot.edit_message_text("عذراً، حدث خطأ أثناء التحميل. تأكد من الرابط.", cid, msg.message_id)
+            wait = bot.reply_to(m, "جاري التحميل... ⏳")
+            res = requests.get(f"https://api.tiklydown.eu.org/api/download?url={text}").json()
+            bot.send_video(cid, res['video']['noWatermark'], reply_to_message_id=m.message_id)
+            bot.delete_message(cid, wait.message_id)
+        except: pass
 
-# تشغيل البوت
-print("البوت شغال...")
-while True:
-    try:
-        bot.polling(none_stop=True)
-    except:
-        time.sleep(5)
+# تشغيل
+print("Bot is Active...")
+bot.infinity_polling(timeout=10, long_polling_timeout=5)
