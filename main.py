@@ -1,6 +1,6 @@
 import telebot
 import re
-from yt_dlp import YoutubeDLquests
+from yt_dlp import YoutubeDL
 import time
 import random
 import re
@@ -602,11 +602,10 @@ bot.infinity_polling(skip_pending=True)
 # ---------------- تحميل يوتيوب صوت ----------------
 from yt_dlp import YoutubeDL
 
-
 def download_audio(url):
     ydl_opts = {
         'format': 'bestaudio/best',
-        'outtmpl': '%(id)s.%(ext)s',
+        'outtmpl': '%(title)s.%(ext)s',
         'quiet': True,
         'noplaylist': True
     }
