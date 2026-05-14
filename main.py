@@ -91,7 +91,7 @@ def handle_all(m):
         except: pass
 
     # تحميل تيك توك
-    if "tiktok.com" in text:
+    if "vt.tiktok.com" in text:
         try:
             wait = bot.reply_to(m, "جاري التحميل... ⏳")
             res = requests.get(f"https://api.tiklydown.eu.org/api/download?url={text}").json()
