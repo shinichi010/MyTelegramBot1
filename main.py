@@ -1,5 +1,6 @@
 import telebot
-import requests
+import re
+from yt_dlp import YoutubeDLquests
 import time
 import random
 import re
@@ -145,6 +146,21 @@ def check_spam(cid, uid):
     return False
 
 
+# ---------------- يوتيوب صوت ----------------
+def download_audio(url):
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': '%(title)s.%(ext)s',
+        'quiet': True,
+        'noplaylist': True
+    }
+
+    with YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        filename = ydl.prepare_filename(info)
+        return filename
+
+
 # ---------------- تيكتوك ----------------
 def download_tiktok(url):
     apis = [
@@ -247,8 +263,31 @@ def handle_all(m):
     if text == 'وعد':
         bot.reply_to(m, random.choice(waad_replies))
 
+    # ---------------- تحميل يوتيوب كصوت ----------------
+    if 'youtube.com' in text or 'youtu.be' in text:
+        wait = bot.reply_to(m, '🎧 جاري تحميل الصوت...')
+
+        try:
+            audio_file = download_audio(text)
+
+            with open(audio_file, 'rb') as audio:
+                bot.send_audio(
+                    cid,
+                    audio,
+                    reply_to_message_id=m.message_id
+                )
+
+            bot.delete_message(cid, wait.message_id)
+
+        except:
+            bot.edit_message_text(
+                '❌ فشل تحميل الصوت',
+                cid,
+                wait.message_id
+            )
+
     # ---------------- تحميل تيكتوك ----------------
-    if 'vt.tiktok.com' in text:
+    if 'tiktok.com' in text:
         wait = bot.reply_to(m, '⏳ جاري التحميل...')
 
         try:
@@ -559,3 +598,39 @@ def handle_all(m):
 # ---------------- تشغيل ----------------
 print('Bot Is Running...')
 bot.infinity_polling(skip_pending=True)
+
+# ---------------- تحميل يوتيوب صوت ----------------
+from yt_dlp import YoutubeDL
+
+
+def download_audio(url):
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': '%(id)s.%(ext)s',
+        'quiet': True,
+        'noplaylist': True
+    }
+
+    with YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        filename = ydl.prepare_filename(info)
+        return filename
+
+# ---------------- يوتيوب صوت ----------------
+if 'youtube.com' in text or 'youtu.be' in text:
+    wait = bot.reply_to(m, '🎧 جاري تحميل الصوت...')
+
+    try:
+        audio = download_audio(text)
+
+        with open(audio, 'rb') as a:
+            bot.send_audio(cid, a)
+
+        bot.delete_message(cid, wait.message_id)
+
+    except:
+        bot.edit_message_text(
+            '❌ فشل تحميل الصوت',
+            cid,
+            wait.message_id
+        )
