@@ -1,635 +1,723 @@
-import telebot
-import re
-from yt_dlp import YoutubeDL
-import time
+import logging
+import json
+import os
+import asyncio
 import random
 import re
-from telebot import types
+import requests
+import tempfile
+from telegram import Update, ChatPermissions
+from telegram.ext import (
+    Application, MessageHandler,
+    filters, ContextTypes, EditedMessageHandler
+)
 
-TOKEN = '8159446452:AAGrkJbtEFoKgXab19l7tX36SDTowRvPxB4'
-bot = telebot.TeleBot(TOKEN, parse_mode='HTML')
-OWNER_ID = 5489814144
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# ---------------- البيانات ----------------
-groups_data = {}
-user_points = {}
-spam_tracker = {}
+SETTINGS_FILE  = "settings.json"
+WARNS_FILE     = "warns.json"
+ROLES_FILE     = "roles.json"
+MENTIONS_FILE  = "mentions.json"
+MARRIAGES_FILE = "marriages.json"
 
-# ---------------- إنشاء بيانات الكروب ----------------
-def get_data(cid):
-    if cid not in groups_data:
-        groups_data[cid] = {
-            'locked': False,
-            'admins': [],
-            'mods': [],
-            'developers': [],
-            'vips': [],
-            'muted': [],
-            'warns': {},
-            'points_enabled': True,
-            'welcome_enabled': True,
-            'links_protection': False,
-            'spam_enabled': True,
-            'spam_limit': 5,
-            'blocked_words': []
+def load_json(path, default):
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return default
+
+def save_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+settings     = load_json(SETTINGS_FILE, {})
+warns        = load_json(WARNS_FILE, {})
+roles        = load_json(ROLES_FILE, {})
+mentions_db  = load_json(MENTIONS_FILE, {})
+marriages_db = load_json(MARRIAGES_FILE, {})
+
+# ═══ إعدادات ═══
+def get_settings(chat_id):
+    key = str(chat_id)
+    if key not in settings:
+        settings[key] = {
+            "welcome": True, "banned_words": [], "locked": False,
+            "links_protection": False, "edit_notify": True,
         }
-    return groups_data[cid]
+        save_json(SETTINGS_FILE, settings)
+    for k, v in {"locked": False, "links_protection": False, "edit_notify": True}.items():
+        settings[key].setdefault(k, v)
+    return settings[key]
 
-# ---------------- نقاط ----------------
-def get_user_points(cid, uid):
-    if cid not in user_points:
-        user_points[cid] = {}
+# ═══ تحذيرات ═══
+def get_warns(chat_id, user_id):
+    return warns.get(str(chat_id), {}).get(str(user_id), 0)
 
-    if uid not in user_points[cid]:
-        user_points[cid][uid] = {
-            'points': 0,
-            'level': 1
-        }
+def set_warns(chat_id, user_id, count):
+    warns.setdefault(str(chat_id), {})[str(user_id)] = count
+    save_json(WARNS_FILE, warns)
 
-    return user_points[cid][uid]
+# ═══ رتب ═══
+ROLE_OWNER   = "owner"
+ROLE_MANAGER = "manager"
+ROLE_VIP     = "vip"
+ROLE_RANK    = {ROLE_OWNER: 3, ROLE_MANAGER: 2, ROLE_VIP: 1}
+ROLE_LABEL   = {ROLE_OWNER: "👑 مالك", ROLE_MANAGER: "🛡 مدير", ROLE_VIP: "⭐ مميز"}
 
-# ---------------- صلاحيات ----------------
-def is_owner(uid):
-    return uid == OWNER_ID
+def get_role(chat_id, user_id):
+    return roles.get(str(chat_id), {}).get(str(user_id))
 
+def set_role(chat_id, user_id, role):
+    roles.setdefault(str(chat_id), {})[str(user_id)] = role
+    save_json(ROLES_FILE, roles)
 
-def is_dev(cid, uid):
-    data = get_data(cid)
-    return uid in data['developers'] or is_owner(uid)
+def remove_role(chat_id, user_id):
+    c, u = str(chat_id), str(user_id)
+    if c in roles and u in roles[c]:
+        del roles[c][u]
+        save_json(ROLES_FILE, roles)
 
+def has_rank(chat_id, user_id, min_role):
+    role = get_role(chat_id, user_id)
+    return bool(role and ROLE_RANK.get(role, 0) >= ROLE_RANK.get(min_role, 99))
 
-def is_admin_message(m):
-    try:
-        cid = m.chat.id
-        uid = m.from_user.id
-        data = get_data(cid)
+async def is_tg_owner(update, context):
+    admins = await context.bot.get_chat_administrators(update.effective_chat.id)
+    return any(a.user.id == update.effective_user.id and a.status == "creator" for a in admins)
 
-        if uid == OWNER_ID:
-            return True
+async def is_privileged(update, context, min_role=ROLE_OWNER):
+    return has_rank(update.effective_chat.id, update.effective_user.id, min_role) or await is_tg_owner(update, context)
 
-        member = bot.get_chat_member(cid, uid)
-
-        if member.status in ['creator', 'administrator']:
-            return True
-
-        if uid in data['admins']:
-            return True
-
-        if uid in data['mods']:
-            return True
-
-        return False
-    except:
-        return False
-
-
-# ---------------- حذف دخول وخروج ----------------
-@bot.message_handler(content_types=['new_chat_members'])
-def welcome(m):
-    data = get_data(m.chat.id)
-
-    try:
-        bot.delete_message(m.chat.id, m.message_id)
-    except:
-        pass
-
-    if not data['welcome_enabled']:
-        return
-
-    for user in m.new_chat_members:
-        text = f'''
-🎉 أهلاً بيك <a href="tg://user?id={user.id}">{user.first_name}</a>
-نورت الكروب ❤️
-        '''
-
-        try:
-            photos = bot.get_user_profile_photos(user.id)
-            if photos.total_count > 0:
-                bot.send_photo(
-                    m.chat.id,
-                    photos.photos[0][-1].file_id,
-                    caption=text
-                )
-            else:
-                bot.send_message(m.chat.id, text)
-        except:
-            bot.send_message(m.chat.id, text)
-
-
-@bot.message_handler(content_types=['left_chat_member'])
-def left_clean(m):
-    try:
-        bot.delete_message(m.chat.id, m.message_id)
-    except:
-        pass
-
-
-# ---------------- سبام ----------------
-def check_spam(cid, uid):
-    data = get_data(cid)
-
-    if not data['spam_enabled']:
-        return False
-
-    current = time.time()
-
-    if uid not in spam_tracker:
-        spam_tracker[uid] = []
-
-    spam_tracker[uid] = [t for t in spam_tracker[uid] if current - t < 5]
-
-    spam_tracker[uid].append(current)
-
-    if len(spam_tracker[uid]) > data['spam_limit']:
-        return True
-
-    return False
-
-
-# ---------------- يوتيوب صوت ----------------
-def download_audio(url):
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': '%(title)s.%(ext)s',
-        'quiet': True,
-        'noplaylist': True
-    }
-
-    with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
-        return filename
-
-
-# ---------------- تيكتوك ----------------
-def download_tiktok(url):
-    apis = [
-        f'https://www.tikwm.com/api/?url={url}',
-        f'https://api.tiklydown.eu.org/api/download?url={url}',
-        f'https://ttdownloader.com/'
-    ]
-
-    for api in apis:
-        try:
-            res = requests.get(api, timeout=10).json()
-
-            if 'data' in res:
-                if 'play' in res['data']:
-                    return res['data']['play']
-
-            if 'video' in res:
-                return res['video']['noWatermark']
-
-        except:
-            continue
-
+async def get_target_user(update, context):
+    msg = update.message
+    if msg.reply_to_message:
+        return msg.reply_to_message.from_user
+    if msg.entities:
+        for ent in msg.entities:
+            if ent.type == "mention":
+                username = msg.text[ent.offset+1:ent.offset+ent.length]
+                try:
+                    chat = await context.bot.get_chat(f"@{username}")
+                    return chat
+                except:
+                    pass
+            elif ent.type == "text_mention" and ent.user:
+                return ent.user
     return None
 
+# ═══ تحميل يوتيوب ═══
+async def download_youtube(url):
+    try:
+        from yt_dlp import YoutubeDL
+        tmp = tempfile.mkdtemp()
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(tmp, '%(title)s.%(ext)s'),
+            'quiet': True,
+            'noplaylist': True,
+            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
+        }
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get('title', 'audio')
+            for f in os.listdir(tmp):
+                if f.endswith('.mp3'):
+                    return os.path.join(tmp, f), title
+        return None, None
+    except:
+        return None, None
 
-# ---------------- الردود ----------------
-waad_replies = [
-    'ها شتريد 😒',
-    'كول بسرعة 🙄',
-    'وعد موجودة 😌',
-    'لتزعجني هسه 😂',
-    'سمعك 👀'
+# ═══ تحميل تيكتوك ═══
+def download_tiktok(url):
+    apis = [
+        f'https://www.tikwm.com/api/?url={url}&hd=1',
+        f'https://api.tiklydown.eu.org/api/download?url={url}',
+    ]
+    for api in apis:
+        try:
+            res = requests.get(api, timeout=15).json()
+            if res.get('code') == 0 and 'data' in res:
+                d = res['data']
+                return d.get('hdplay') or d.get('play')
+            if 'video' in res:
+                return res['video'].get('noWatermark') or res['video'].get('watermark')
+        except:
+            continue
+    return None
+
+# ═══ ردود عشوائية ═══
+lo_kh = [
+    'تاكل صرصر لو تشرب نفط؟ 😂',
+    'تترك التلفون شهر لو الاكل يومين؟ 😭',
+    'تنام بالشارع لو تبقى بدون نت؟ 😵',
+    'تحب شخص يكرهك لو تكره شخص يحبك؟ 🤔',
+    'تكون غني وحيد لو فقير ومحاط بالأهل؟ 💸',
+    'تعيش بدون موسيقى لو بدون أفلام؟ 🎵',
+    'تصير مشهور ويكرهونك لو عادي ومحبوب؟ 🌟',
+    'تنام 12 ساعة كل يوم لو ما تنام بالنهار؟ 😴',
+    'تكذب وتنجح لو تصدق وتفشل؟ 🤥',
+    'تفقد ذاكرتك لو تفقد حاستك؟ 😱',
 ]
 
+waad_replies = [
+    'ها شتريد 😒', 'كول بسرعة 🙄', 'وعد موجودة 😌',
+    'لتزعجني هسه 😂', 'سمعك 👀', 'ايه؟ 😑',
+]
 
-# ---------------- معالجة الرسائل ----------------
-@bot.message_handler(func=lambda m: True)
-def handle_all(m):
-    text = m.text
+# ═══════════════════════════════════════════════
+#  المعالج الرئيسي
+# ═══════════════════════════════════════════════
+async def handle(update, context):
+    if not update.message:
+        return
+    msg  = update.message
+    text = (msg.text or "").strip()
+    chat_id = msg.chat.id
+    user_id = msg.from_user.id
+    s = get_settings(chat_id)
+
+    # ══ قفل الشات ══
+    if s.get("locked", False):
+        role = get_role(chat_id, user_id)
+        tg_own = False
+        try:
+            admins = await context.bot.get_chat_administrators(chat_id)
+            tg_own = any(a.user.id == user_id and a.status == "creator" for a in admins)
+        except:
+            pass
+        if not role and not tg_own:
+            try: await msg.delete()
+            except: pass
+            return
 
     if not text:
         return
 
-    cid = m.chat.id
-    uid = m.from_user.id
+    # ══ حماية الروابط ══
+    if s.get("links_protection", False) and not get_role(chat_id, user_id):
+        if re.search(r'https?://|t\.me/|\.com|\.net|\.org', text, re.I):
+            try: await msg.delete()
+            except: pass
+            return
 
-    data = get_data(cid)
+    # ══ كلمات محظورة ══
+    for word in s.get("banned_words", []):
+        if word in text.lower():
+            if not get_role(chat_id, user_id):
+                try:
+                    await msg.delete()
+                    await context.bot.send_message(chat_id, f"⚠️ {msg.from_user.first_name}، رسالتك تحتوي على كلمة محظورة.")
+                except: pass
+            return
 
-    # ---------------- نقاط ----------------
-    if data['points_enabled']:
-        user = get_user_points(cid, uid)
-        user['points'] += 1
+    priv_owner   = await is_privileged(update, context, ROLE_OWNER)
+    priv_manager = await is_privileged(update, context, ROLE_MANAGER)
+    any_role     = bool(get_role(chat_id, user_id)) or await is_tg_owner(update, context)
 
-        new_level = user['points'] // 100 + 1
-
-        if new_level > user['level']:
-            user['level'] = new_level
-
-    # ---------------- سبام ----------------
-    if check_spam(cid, uid) and not is_admin_message(m):
-        if uid not in data['muted']:
-            data['muted'].append(uid)
-
-            bot.reply_to(
-                m,
-                '🚫 تم كتمك مؤقتاً بسبب السبام'
-            )
-
+    # ══════════════════════════════
+    #  قائمة الأوامر
+    # ══════════════════════════════
+    if text == "الاوامر":
+        t = (
+            "📋 *قائمة الأوامر*\n\n"
+            "👑 *مالك فقط:*\n"
+            "`رفع مالك` — تعيين مالك (رد/منشن)\n"
+            "`رفع مدير` — تعيين مدير\n"
+            "`رفع مميز` — تعيين مميز\n"
+            "`تنزيل رتبة` — إزالة رتبة\n"
+            "`الرتب` — عرض الرتب\n"
+            "`طرد` — طرد عضو\n"
+            "`تحذير` / `الغاء تحذير` — تحذير / إلغاء\n"
+            "`منع كلمة X` — إضافة كلمة محظورة\n"
+            "`حذف كلمة X` — حذف كلمة محظورة\n"
+            "`الكلمات` — عرض الكلمات المحظورة\n"
+            "`الترحيب تشغيل` / `الترحيب ايقاف`\n"
+            "`تعديل تشغيل` / `تعديل ايقاف` — إشعار تعديل الرسائل\n"
+            "`روابط تشغيل` / `روابط ايقاف` — حماية الروابط\n"
+            "`فحص بوتات` — كشف البوتات\n"
+            "`اضافة منشن اسم @يوزر` — ربط اسم بمنشن\n"
+            "`حذف منشن اسم` — حذف ربط\n"
+            "`المنشنات` — عرض المنشنات\n\n"
+            "🛡 *مدير + مالك:*\n"
+            "`حظر` / `فك حظر` — بالرد أو المنشن\n"
+            "`كتم` / `الغاء كتم`\n"
+            "`قفل الشات` / `فتح الشات`\n"
+            "`استفتاء سؤال | خيار1 | خيار2`\n"
+            "`منشن الكل`\n\n"
+            "⭐ *كل الرتب:*\n"
+            "`مسح X` — حذف X رسالة\n\n"
+            "👥 *للجميع:*\n"
+            "`تحذيراتي` — عدد تحذيراتك\n"
+            "`ايدي` — معلوماتك أو معلومات عضو (رد/منشن)\n"
+            "`افتار` — عرض أفاتار\n"
+            "`زواج` — زواج (رد/منشن)\n"
+            "`طلاق` — طلاق\n"
+            "`شريكي` — عرض شريكك\n"
+            "`انطقي نص` — البوت يكرر النص\n"
+            "`لو خيروك` — سؤال عشوائي\n"
+            "`وعد` — رد عشوائي\n\n"
+            "📥 *تحميل:*\n"
+            "أرسل رابط يوتيوب ← صوت MP3\n"
+            "أرسل رابط تيكتوك ← فيديو\n"
+        )
+        await msg.reply_text(t, parse_mode="Markdown")
         return
 
-    # ---------------- القفل والكتم ----------------
-    if (data['locked'] or uid in data['muted']) and not is_admin_message(m) and uid not in data['vips']:
-        try:
-            bot.delete_message(cid, m.message_id)
-            return
-        except:
-            pass
+    # ══ رتب ══
+    if text in ("رفع مالك", "رفع مدير", "رفع مميز") and priv_owner:
+        role_map = {"رفع مالك": ROLE_OWNER, "رفع مدير": ROLE_MANAGER, "رفع مميز": ROLE_VIP}
+        target = await get_target_user(update, context)
+        if not target:
+            return await msg.reply_text("رد على رسالة العضو أو اذكره.")
+        set_role(chat_id, target.id, role_map[text])
+        await msg.reply_text(f"✅ تم تعيين {target.first_name} كـ {ROLE_LABEL[role_map[text]]}.")
+        return
 
-    # ---------------- منع روابط ----------------
-    if data['links_protection']:
-        if 'http' in text or 't.me' in text or '.com' in text:
-            if not is_admin_message(m):
-                try:
-                    bot.delete_message(cid, m.message_id)
-                    return
-                except:
-                    pass
+    if text == "تنزيل رتبة" and priv_owner:
+        target = await get_target_user(update, context)
+        if not target:
+            return await msg.reply_text("رد على رسالة العضو أو اذكره.")
+        remove_role(chat_id, target.id)
+        await msg.reply_text(f"✅ تمت إزالة رتبة {target.first_name}.")
+        return
 
-    # ---------------- كلمات ممنوعة ----------------
-    for word in data['blocked_words']:
-        if word.lower() in text.lower():
-            if not is_admin_message(m):
-                try:
-                    bot.delete_message(cid, m.message_id)
-                    return
-                except:
-                    pass
-
-    # ---------------- ردود ----------------
-    if text == 'وعد':
-        bot.reply_to(m, random.choice(waad_replies))
-
-    # ---------------- تحميل يوتيوب كصوت ----------------
-    if 'youtube.com' in text or 'youtu.be' in text:
-        wait = bot.reply_to(m, '🎧 جاري تحميل الصوت...')
-
-        try:
-            audio_file = download_audio(text)
-
-            with open(audio_file, 'rb') as audio:
-                bot.send_audio(
-                    cid,
-                    audio,
-                    reply_to_message_id=m.message_id
-                )
-
-            bot.delete_message(cid, wait.message_id)
-
-        except:
-            bot.edit_message_text(
-                '❌ فشل تحميل الصوت',
-                cid,
-                wait.message_id
-            )
-
-    # ---------------- تحميل تيكتوك ----------------
-    if 'tiktok.com' in text:
-        wait = bot.reply_to(m, '⏳ جاري التحميل...')
-
-        try:
-            video = download_tiktok(text)
-
-            if video:
-                bot.send_video(cid, video, reply_to_message_id=m.message_id)
-                bot.delete_message(cid, wait.message_id)
-            else:
-                bot.edit_message_text(
-                    '❌ فشل تحميل الفيديو',
-                    cid,
-                    wait.message_id
-                )
-
-        except:
-            bot.edit_message_text(
-                '❌ صار خطأ أثناء التحميل',
-                cid,
-                wait.message_id
-            )
-
-    # ---------------- أوامر بالرد ----------------
-    if m.reply_to_message:
-        target_id = m.reply_to_message.from_user.id
-        target_name = m.reply_to_message.from_user.first_name
-
-        # رفع مدير
-        if text == 'رفع مدير' and is_admin_message(m):
-            if target_id not in data['admins']:
-                data['admins'].append(target_id)
-
-            bot.reply_to(m, f'✅ تم رفع {target_name} مدير')
-
-        # تنزيل مدير
-        elif text == 'تنزيل مدير' and is_admin_message(m):
-            if target_id in data['admins']:
-                data['admins'].remove(target_id)
-
-            bot.reply_to(m, f'✅ تم تنزيل {target_name}')
-
-        # رفع ادمن
-        elif text == 'رفع ادمن' and is_admin_message(m):
-            if target_id not in data['mods']:
-                data['mods'].append(target_id)
-
-            bot.reply_to(m, f'✅ تم رفع {target_name} ادمن')
-
-        # تنزيل ادمن
-        elif text == 'تنزيل ادمن' and is_admin_message(m):
-            if target_id in data['mods']:
-                data['mods'].remove(target_id)
-
-            bot.reply_to(m, f'✅ تم تنزيل الادمن')
-
-        # VIP
-        elif text == 'رفع vip' and is_admin_message(m):
-            if target_id not in data['vips']:
-                data['vips'].append(target_id)
-
-            bot.reply_to(m, f'⭐ صار VIP')
-
-        elif text == 'تنزيل vip' and is_admin_message(m):
-            if target_id in data['vips']:
-                data['vips'].remove(target_id)
-
-            bot.reply_to(m, '❌ انشال من VIP')
-
-        # كتم
-        elif text == 'كتم' and is_admin_message(m):
-            if target_id not in data['muted']:
-                data['muted'].append(target_id)
-
-            bot.reply_to(m, '🔇 تم الكتم')
-
-        # الغاء كتم
-        elif text == 'الغاء الكتم' and is_admin_message(m):
-            if target_id in data['muted']:
-                data['muted'].remove(target_id)
-
-            bot.reply_to(m, '🔊 تم الغاء الكتم')
-
-        # طرد
-        elif text == 'طرد' and is_admin_message(m):
+    if text == "الرتب":
+        chat_roles = roles.get(str(chat_id), {})
+        if not chat_roles:
+            return await msg.reply_text("لا توجد رتب معينة.")
+        lines = []
+        for uid, role in chat_roles.items():
             try:
-                bot.kick_chat_member(cid, target_id)
-                bot.reply_to(m, '✅ تم الطرد')
+                member = await context.bot.get_chat_member(chat_id, int(uid))
+                name = member.user.first_name
             except:
-                bot.reply_to(m, '❌ ما اكدر اطرده')
+                name = f"ID:{uid}"
+            lines.append(f"{ROLE_LABEL[role]} — {name}")
+        await msg.reply_text("📋 *الرتب:*\n" + "\n".join(lines), parse_mode="Markdown")
+        return
 
-    # ---------------- أوامر عامة ----------------
+    # ══ طرد ══
+    if text == "طرد" and priv_owner:
+        target = await get_target_user(update, context)
+        if not target:
+            return await msg.reply_text("رد على رسالة العضو أو اذكره.")
+        await context.bot.ban_chat_member(chat_id, target.id)
+        await context.bot.unban_chat_member(chat_id, target.id)
+        await msg.reply_text(f"👢 تم طرد {target.first_name}.")
+        return
 
-    if text == 'الاوامر' and is_admin_message(m):
-        commands = '''
-📌 أوامر الإدارة
-• رفع مدير
-• تنزيل مدير
-• رفع ادمن
-• تنزيل ادمن
-• رفع vip
-• تنزيل vip
-• كتم
-• الغاء الكتم
-• طرد
-• مسح + عدد
+    # ══ حظر / فك حظر ══
+    if text == "حظر" and priv_manager:
+        target = await get_target_user(update, context)
+        if not target:
+            return await msg.reply_text("رد على رسالة العضو أو اذكره.")
+        await context.bot.ban_chat_member(chat_id, target.id)
+        await msg.reply_text(f"🚫 تم حظر {target.first_name}.")
+        return
 
-🔒 أوامر الحماية
-• قفل الشات
-• فتح الشات
-• تفعيل الروابط
-• تعطيل الروابط
-• تفعيل الترحيب
-• تعطيل الترحيب
-• تشغيل النقاط
-• تعطيل النقاط
-• تشغيل السبام
-• تعطيل السبام
-• حد السبام + رقم
+    if text == "فك حظر" and priv_manager:
+        target = await get_target_user(update, context)
+        if not target:
+            return await msg.reply_text("رد على رسالة العضو أو اذكره.")
+        await context.bot.unban_chat_member(chat_id, target.id)
+        await msg.reply_text(f"✅ رفع الحظر عن {target.first_name}.")
+        return
 
-⭐ أوامر النقاط
-• نقاطي
-• لفلي
-• توب
-• اضافة نقاط
-• تنزيل نقاط
+    # ══ كتم / الغاء كتم ══
+    if text == "كتم" and priv_manager:
+        target = await get_target_user(update, context)
+        if not target:
+            return await msg.reply_text("رد على رسالة العضو أو اذكره.")
+        await context.bot.restrict_chat_member(chat_id, target.id, ChatPermissions(can_send_messages=False))
+        await msg.reply_text(f"🔇 تم كتم {target.first_name}.")
+        return
 
-🎮 أوامر التسلية
-• لو خيروك
+    if text == "الغاء كتم" and priv_manager:
+        target = await get_target_user(update, context)
+        if not target:
+            return await msg.reply_text("رد على رسالة العضو أو اذكره.")
+        await context.bot.restrict_chat_member(chat_id, target.id, ChatPermissions(
+            can_send_messages=True, can_send_media_messages=True,
+            can_send_other_messages=True, can_add_web_page_previews=True
+        ))
+        await msg.reply_text(f"🔊 رفع الكتم عن {target.first_name}.")
+        return
 
-📥 التحميل
-• فقط ارسل رابط تيكتوك
-        '''
-
-        bot.reply_to(m, commands)
-
-    # ---------------- النقاط ----------------
-    if text == 'نقاطي':
-        user = get_user_points(cid, uid)
-
-        bot.reply_to(
-            m,
-            f'''⭐ نقاطك: {user['points']}'''
-        )
-
-    if text == 'لفلي':
-        user = get_user_points(cid, uid)
-
-        bot.reply_to(
-            m,
-            f'''
-🏆 لفلك: {user['level']}
-⭐ نقاطك: {user['points']}
-            '''
-        )
-
-    if text == 'توب':
-        if cid not in user_points:
-            return
-
-        users = sorted(
-            user_points[cid].items(),
-            key=lambda x: x[1]['points'],
-            reverse=True
-        )[:10]
-
-        msg = '🏆 توب 10\n\n'
-
-        count = 1
-        for u in users:
-            try:
-                user_info = bot.get_chat_member(cid, u[0]).user
-                msg += f'{count}- {user_info.first_name} | {u[1]["points"]} نقطة\n'
-                count += 1
-            except:
-                pass
-
-        bot.reply_to(m, msg)
-
-    # ---------------- تشغيل وتعطيل ----------------
-    if text == 'تشغيل النقاط' and is_admin_message(m):
-        data['points_enabled'] = True
-        bot.reply_to(m, '✅ تم تشغيل النقاط')
-
-    if text == 'تعطيل النقاط' and is_admin_message(m):
-        data['points_enabled'] = False
-        bot.reply_to(m, '❌ تم تعطيل النقاط')
-
-    if text == 'تشغيل السبام' and is_admin_message(m):
-        data['spam_enabled'] = True
-        bot.reply_to(m, '✅ تم تشغيل حماية السبام')
-
-    if text == 'تعطيل السبام' and is_admin_message(m):
-        data['spam_enabled'] = False
-        bot.reply_to(m, '❌ تم تعطيل حماية السبام')
-
-    if text.startswith('حد السبام') and is_admin_message(m):
-        try:
-            limit = int(text.split()[2])
-            data['spam_limit'] = limit
-
-            bot.reply_to(m, f'✅ صار حد السبام {limit}')
-        except:
-            bot.reply_to(m, '❌ استخدم: حد السبام 5')
-
-    # ---------------- روابط ----------------
-    if text == 'تفعيل الروابط' and is_admin_message(m):
-        data['links_protection'] = True
-        bot.reply_to(m, '✅ تم تفعيل منع الروابط')
-
-    if text == 'تعطيل الروابط' and is_admin_message(m):
-        data['links_protection'] = False
-        bot.reply_to(m, '❌ تم تعطيل منع الروابط')
-
-    # ---------------- ترحيب ----------------
-    if text == 'تفعيل الترحيب' and is_admin_message(m):
-        data['welcome_enabled'] = True
-        bot.reply_to(m, '✅ تم تفعيل الترحيب')
-
-    if text == 'تعطيل الترحيب' and is_admin_message(m):
-        data['welcome_enabled'] = False
-        bot.reply_to(m, '❌ تم تعطيل الترحيب')
-
-    # ---------------- كلمات ممنوعة ----------------
-    if text.startswith('منع كلمة') and is_admin_message(m):
-        try:
-            word = text.replace('منع كلمة ', '')
-
-            if word not in data['blocked_words']:
-                data['blocked_words'].append(word)
-
-            bot.reply_to(m, f'✅ تم منع: {word}')
-        except:
-            pass
-
-    if text.startswith('حذف كلمة') and is_admin_message(m):
-        try:
-            word = text.replace('حذف كلمة ', '')
-
-            if word in data['blocked_words']:
-                data['blocked_words'].remove(word)
-
-            bot.reply_to(m, '✅ تم حذف الكلمة')
-        except:
-            pass
-
-    if text == 'الكلمات الممنوعة':
-        words = data['blocked_words']
-
-        if not words:
-            bot.reply_to(m, 'ماكو كلمات ممنوعة')
+    # ══ تحذير ══
+    if text == "تحذير" and priv_owner:
+        target = await get_target_user(update, context)
+        if not target:
+            return await msg.reply_text("رد على رسالة العضو أو اذكره.")
+        count = get_warns(chat_id, target.id) + 1
+        set_warns(chat_id, target.id, count)
+        if count >= 3:
+            await context.bot.ban_chat_member(chat_id, target.id)
+            set_warns(chat_id, target.id, 0)
+            await msg.reply_text(f"🚫 {target.first_name} وصل 3 تحذيرات — تم حظره.")
         else:
-            bot.reply_to(m, '\n'.join(words))
+            await msg.reply_text(f"⚠️ تحذير {count}/3 لـ {target.first_name}.")
+        return
 
-    # ---------------- قفل ----------------
-    if text == 'قفل الشات' and is_admin_message(m):
-        data['locked'] = True
-        bot.reply_to(m, '🔒 تم قفل الشات')
+    if text == "الغاء تحذير" and priv_owner:
+        target = await get_target_user(update, context)
+        if not target:
+            return await msg.reply_text("رد على رسالة العضو أو اذكره.")
+        set_warns(chat_id, target.id, 0)
+        await msg.reply_text(f"✅ مسح تحذيرات {target.first_name}.")
+        return
 
-    if text == 'فتح الشات' and is_admin_message(m):
-        data['locked'] = False
-        bot.reply_to(m, '🔓 تم فتح الشات')
+    if text == "تحذيراتي":
+        count = get_warns(chat_id, user_id)
+        await msg.reply_text(f"تحذيراتك: {count}/3")
+        return
 
-    # ---------------- مسح ----------------
-    if text.startswith('مسح ') and is_admin_message(m):
+    # ══ قفل / فتح ══
+    if text == "قفل الشات" and priv_manager:
+        s["locked"] = True; save_json(SETTINGS_FILE, settings)
+        await msg.reply_text("🔒 الشات مقفول.")
+        return
+
+    if text == "فتح الشات" and priv_manager:
+        s["locked"] = False; save_json(SETTINGS_FILE, settings)
+        await msg.reply_text("🔓 الشات مفتوح.")
+        return
+
+    # ══ كلمات محظورة ══
+    if text.startswith("منع كلمة ") and priv_owner:
+        word = text[9:].strip().lower()
+        if word and word not in s["banned_words"]:
+            s["banned_words"].append(word)
+            save_json(SETTINGS_FILE, settings)
+        await msg.reply_text(f"✅ تمت إضافة: {word}")
+        return
+
+    if text.startswith("حذف كلمة ") and priv_owner:
+        word = text[9:].strip().lower()
+        if word in s["banned_words"]:
+            s["banned_words"].remove(word)
+            save_json(SETTINGS_FILE, settings)
+            await msg.reply_text(f"✅ تمت إزالة: {word}")
+        else:
+            await msg.reply_text("الكلمة مو موجودة.")
+        return
+
+    if text == "الكلمات" and priv_owner:
+        if not s["banned_words"]:
+            await msg.reply_text("لا توجد كلمات محظورة.")
+        else:
+            await msg.reply_text("🚫 الكلمات المحظورة:\n" + "\n".join(s["banned_words"]))
+        return
+
+    # ══ ترحيب ══
+    if text == "الترحيب تشغيل" and priv_owner:
+        s["welcome"] = True; save_json(SETTINGS_FILE, settings)
+        await msg.reply_text("✅ الترحيب مفعّل.")
+        return
+
+    if text == "الترحيب ايقاف" and priv_owner:
+        s["welcome"] = False; save_json(SETTINGS_FILE, settings)
+        await msg.reply_text("🔕 الترحيب موقوف.")
+        return
+
+    # ══ إشعار التعديل ══
+    if text == "تعديل تشغيل" and priv_owner:
+        s["edit_notify"] = True; save_json(SETTINGS_FILE, settings)
+        await msg.reply_text("✅ إشعار التعديل مفعّل.")
+        return
+
+    if text == "تعديل ايقاف" and priv_owner:
+        s["edit_notify"] = False; save_json(SETTINGS_FILE, settings)
+        await msg.reply_text("❌ إشعار التعديل موقوف.")
+        return
+
+    # ══ حماية الروابط ══
+    if text == "روابط تشغيل" and priv_owner:
+        s["links_protection"] = True; save_json(SETTINGS_FILE, settings)
+        await msg.reply_text("✅ حماية الروابط مفعّلة.")
+        return
+
+    if text == "روابط ايقاف" and priv_owner:
+        s["links_protection"] = False; save_json(SETTINGS_FILE, settings)
+        await msg.reply_text("❌ حماية الروابط موقوفة.")
+        return
+
+    # ══ فحص بوتات ══
+    if text == "فحص بوتات" and priv_owner:
+        wait_msg = await msg.reply_text("🔍 جاري الفحص...")
         try:
-            num = int(text.split()[1])
-
-            for i in range(num + 1):
-                try:
-                    bot.delete_message(cid, m.message_id - i)
-                except:
-                    pass
-        except:
-            pass
-
-    # ---------------- ايدي ----------------
-    if text == 'ايدي':
-        try:
-            photos = bot.get_user_profile_photos(uid)
-
-            caption = f'''
-👤 الاسم: {m.from_user.first_name}
-🆔 الايدي: <code>{uid}</code>
-            '''
-
-            if photos.total_count > 0:
-                bot.send_photo(
-                    cid,
-                    photos.photos[0][-1].file_id,
-                    caption=caption
-                )
+            admins = await context.bot.get_chat_administrators(chat_id)
+            bot_list = [a for a in admins if a.user.is_bot and a.user.id != context.bot.id]
+            if not bot_list:
+                await wait_msg.edit_text("✅ ما في بوتات ثانية.")
             else:
-                bot.reply_to(m, caption)
+                lines = "\n".join([f"• @{b.user.username or b.user.first_name}" for b in bot_list])
+                await wait_msg.edit_text(f"🤖 *البوتات:*\n{lines}", parse_mode="Markdown")
         except:
-            pass
+            await wait_msg.edit_text("❌ ما قدرت أفحص.")
+        return
 
-    # ---------------- تسلية ----------------
-    if text == 'لو خيروك':
-        choices = [
-            'تاكل صرصر لو تشرب نفط؟ 😂',
-            'تترك التلفون شهر لو الاكل يومين؟ 😭',
-            'تنام بالشارع لو تبقى بدون نت؟ 😵'
-        ]
+    # ══ منشن بالاسم ══
+    if text.startswith("اضافة منشن ") and priv_owner:
+        parts = text[11:].strip().split()
+        if len(parts) < 2:
+            return await msg.reply_text("مثال: اضافة منشن أحمد @username")
+        name = parts[0]
+        username = parts[1].lstrip("@")
+        mentions_db.setdefault(str(chat_id), {})[name] = username
+        save_json(MENTIONS_FILE, mentions_db)
+        await msg.reply_text(f"✅ تم ربط '{name}' بـ @{username}")
+        return
 
-        bot.reply_to(m, random.choice(choices))
+    if text.startswith("حذف منشن ") and priv_owner:
+        name = text[9:].strip()
+        chat_mentions = mentions_db.get(str(chat_id), {})
+        if name in chat_mentions:
+            del chat_mentions[name]
+            save_json(MENTIONS_FILE, mentions_db)
+            await msg.reply_text(f"✅ تم حذف منشن '{name}'")
+        else:
+            await msg.reply_text("الاسم مو موجود.")
+        return
 
+    if text == "المنشنات":
+        m = mentions_db.get(str(chat_id), {})
+        if not m:
+            return await msg.reply_text("لا توجد منشنات.")
+        lines = [f"• {n} → @{u}" for n, u in m.items()]
+        await msg.reply_text("📋 *المنشنات:*\n" + "\n".join(lines), parse_mode="Markdown")
+        return
 
-# ---------------- تشغيل ----------------
-print('Bot Is Running...')
-bot.infinity_polling(skip_pending=True)
+    # ══ منشن الكل ══
+    if text == "منشن الكل" and priv_manager:
+        try:
+            admins = await context.bot.get_chat_administrators(chat_id)
+            mentions = " ".join([
+                f'<a href="tg://user?id={a.user.id}">{a.user.first_name}</a>'
+                for a in admins if not a.user.is_bot
+            ])
+            await msg.reply_text(f"📢 {mentions}", parse_mode="HTML")
+        except:
+            await msg.reply_text("❌ ما قدرت.")
+        return
 
-# ---------------- تحميل يوتيوب صوت ----------------
-from yt_dlp import YoutubeDL
+    # ══ مسح ══
+    if text.startswith("مسح ") and any_role:
+        parts = text.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            count = int(parts[1])
+            if 1 <= count <= 200:
+                msg_id = msg.message_id
+                deleted = 0
+                for mid in range(msg_id - count, msg_id + 1):
+                    try:
+                        await context.bot.delete_message(chat_id, mid)
+                        deleted += 1
+                    except:
+                        pass
+                notice = await context.bot.send_message(chat_id, f"🗑 تم حذف {deleted} رسالة.")
+                await asyncio.sleep(3)
+                try: await notice.delete()
+                except: pass
+        return
 
-def download_audio(url):
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': '%(title)s.%(ext)s',
-        'quiet': True,
-        'noplaylist': True
-    }
+    # ══ استفتاء ══
+    if text.startswith("استفتاء ") and priv_manager:
+        parts = [p.strip() for p in text[8:].split("|")]
+        if len(parts) < 3:
+            return await msg.reply_text("مثال: استفتاء سؤالك | خيار1 | خيار2")
+        try:
+            await context.bot.send_poll(chat_id, question=parts[0], options=parts[1:], is_anonymous=False)
+        except Exception as e:
+            await msg.reply_text(f"❌ خطأ: {e}")
+        return
 
-    with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
-        return filename
-
-# ---------------- يوتيوب صوت ----------------
-if 'youtube.com' in text or 'youtu.be' in text:
-    wait = bot.reply_to(m, '🎧 جاري تحميل الصوت...')
-
-    try:
-        audio = download_audio(text)
-
-        with open(audio, 'rb') as a:
-            bot.send_audio(cid, a)
-
-        bot.delete_message(cid, wait.message_id)
-
-    except:
-        bot.edit_message_text(
-            '❌ فشل تحميل الصوت',
-            cid,
-            wait.message_id
+    # ══ ايدي ══
+    if text == "ايدي":
+        target = await get_target_user(update, context)
+        user = target if target else msg.from_user
+        uid = user.id
+        username = f"@{user.username}" if user.username else "—"
+        role = get_role(chat_id, uid)
+        role_text = ROLE_LABEL.get(role, "—") if role else "—"
+        caption = (
+            f"👤 <b>الاسم:</b> {user.first_name}\n"
+            f"🆔 <b>الآيدي:</b> <code>{uid}</code>\n"
+            f"📌 <b>اليوزر:</b> {username}\n"
+            f"🏅 <b>الرتبة:</b> {role_text}"
         )
+        try:
+            photos = await context.bot.get_user_profile_photos(uid, limit=1)
+            if photos.total_count > 0:
+                await context.bot.send_photo(chat_id, photos.photos[0][-1].file_id, caption=caption, parse_mode="HTML")
+            else:
+                await msg.reply_text(caption, parse_mode="HTML")
+        except:
+            await msg.reply_text(caption, parse_mode="HTML")
+        return
+
+    # ══ افتار ══
+    if text == "افتار":
+        target = await get_target_user(update, context)
+        user = target if target else msg.from_user
+        try:
+            photos = await context.bot.get_user_profile_photos(user.id, limit=1)
+            if photos.total_count > 0:
+                await context.bot.send_photo(chat_id, photos.photos[0][-1].file_id, caption=f"🖼 أفاتار {user.first_name}")
+            else:
+                await msg.reply_text("ما عنده صورة بروفايل.")
+        except:
+            await msg.reply_text("ما قدرت أجيب الصورة.")
+        return
+
+    # ══ زواج وطلاق ══
+    if text == "زواج":
+        target = await get_target_user(update, context)
+        if not target:
+            return await msg.reply_text("رد على رسالة الشخص أو اذكره.")
+        if str(target.id) == str(user_id):
+            return await msg.reply_text("ما تقدر تتزوج نفسك 😂")
+        marriages_db.setdefault(str(chat_id), {})
+        if str(user_id) in marriages_db[str(chat_id)]:
+            return await msg.reply_text("أنت متزوج خلاص! اطلق أول.")
+        marriages_db[str(chat_id)][str(user_id)] = str(target.id)
+        marriages_db[str(chat_id)][str(target.id)] = str(user_id)
+        save_json(MARRIAGES_FILE, marriages_db)
+        u1 = f'<a href="tg://user?id={user_id}">{msg.from_user.first_name}</a>'
+        u2 = f'<a href="tg://user?id={target.id}">{target.first_name}</a>'
+        await msg.reply_text(f"💍 تهانينا! {u1} و {u2} صاروا متزوجين! 🎉", parse_mode="HTML")
+        return
+
+    if text == "طلاق":
+        marriages_db.setdefault(str(chat_id), {})
+        if str(user_id) not in marriages_db[str(chat_id)]:
+            return await msg.reply_text("أنت مو متزوج أصلاً.")
+        partner_id = marriages_db[str(chat_id)].pop(str(user_id))
+        marriages_db[str(chat_id)].pop(partner_id, None)
+        save_json(MARRIAGES_FILE, marriages_db)
+        await msg.reply_text("💔 تم الطلاق.")
+        return
+
+    if text == "شريكي":
+        marriages_db.setdefault(str(chat_id), {})
+        if str(user_id) not in marriages_db[str(chat_id)]:
+            return await msg.reply_text("أنت مو متزوج.")
+        partner_id = marriages_db[str(chat_id)][str(user_id)]
+        try:
+            member = await context.bot.get_chat_member(chat_id, int(partner_id))
+            p = member.user
+            await msg.reply_text(f'💑 شريكك: <a href="tg://user?id={p.id}">{p.first_name}</a>', parse_mode="HTML")
+        except:
+            await msg.reply_text("ما قدرت أجيب معلومات شريكك.")
+        return
+
+    # ══ انطقي ══
+    if text.startswith("انطقي "):
+        speech = text[6:].strip()
+        if speech:
+            await msg.reply_text(speech)
+        return
+
+    # ══ لو خيروك ══
+    if text == "لو خيروك":
+        await msg.reply_text(random.choice(lo_kh))
+        return
+
+    # ══ وعد ══
+    if text == "وعد":
+        await msg.reply_text(random.choice(waad_replies))
+        return
+
+    # ══ منشن بالاسم تلقائي ══
+    chat_mentions = mentions_db.get(str(chat_id), {})
+    for name, username in chat_mentions.items():
+        if name in text:
+            await msg.reply_text(f"📣 تم منادة {name}! بانتظار رده 👉 @{username}")
+
+    # ══ تحميل يوتيوب ══
+    if re.search(r'youtube\.com|youtu\.be', text):
+        url = re.search(r'https?://\S+', text)
+        if url:
+            wait = await msg.reply_text("🎧 جاري تحميل الصوت...")
+            try:
+                filepath, title = await download_youtube(url.group())
+                if filepath and os.path.exists(filepath):
+                    with open(filepath, 'rb') as audio:
+                        await context.bot.send_audio(chat_id, audio, title=title, reply_to_message_id=msg.message_id)
+                    try: os.remove(filepath)
+                    except: pass
+                    await wait.delete()
+                else:
+                    await wait.edit_text("❌ فشل تحميل الصوت.")
+            except:
+                await wait.edit_text("❌ فشل تحميل الصوت.")
+        return
+
+    # ══ تحميل تيكتوك ══
+    if 'tiktok.com' in text:
+        url = re.search(r'https?://\S+', text)
+        if url:
+            wait = await msg.reply_text("⏳ جاري تحميل التيكتوك...")
+            try:
+                video_url = download_tiktok(url.group())
+                if video_url:
+                    await context.bot.send_video(chat_id, video_url, reply_to_message_id=msg.message_id)
+                    await wait.delete()
+                else:
+                    await wait.edit_text("❌ فشل تحميل الفيديو.")
+            except:
+                await wait.edit_text("❌ صار خطأ.")
+        return
+
+# ═══ ترحيب أعضاء جدد ═══
+async def welcome_member(update, context):
+    for member in update.message.new_chat_members:
+        if member.is_bot:
+            continue
+        s = get_settings(update.message.chat.id)
+        if s.get("welcome", True):
+            name = f'<a href="tg://user?id={member.id}">{member.first_name}</a>'
+            try:
+                photos = await context.bot.get_user_profile_photos(member.id, limit=1)
+                if photos.total_count > 0:
+                    await context.bot.send_photo(
+                        update.message.chat.id,
+                        photos.photos[0][-1].file_id,
+                        caption=f"👋 أهلاً {name} في المجموعة! 🎉",
+                        parse_mode="HTML"
+                    )
+                else:
+                    await update.message.reply_text(f"👋 أهلاً {name} في المجموعة! 🎉", parse_mode="HTML")
+            except:
+                await update.message.reply_text(f"👋 أهلاً {name} في المجموعة! 🎉", parse_mode="HTML")
+
+# ═══ إشعار تعديل الرسائل ═══
+async def edited_message_handler(update, context):
+    if not update.edited_message:
+        return
+    chat_id = update.edited_message.chat.id
+    s = get_settings(chat_id)
+    if not s.get("edit_notify", True):
+        return
+    msg = update.edited_message
+    user = msg.from_user
+    new_text = msg.text or "[ميديا]"
+    name = f'<a href="tg://user?id={user.id}">{user.first_name}</a>'
+    await context.bot.send_message(
+        chat_id,
+        f"✏️ {name} عدّل رسالته:\n\n{new_text}",
+        parse_mode="HTML"
+    )
+
+# ═══ Main ═══
+def main():
+    token = os.environ.get("BOT_TOKEN", "8159446452:AAGtFNGAfMxoC2iPwE06Z0gnW0IUUvmAEa0")
+    app = Application.builder().token(token).build()
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_member))
+    app.add_handler(EditedMessageHandler(filters.TEXT, edited_message_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    print("✅ البوت شغال...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
