@@ -9,7 +9,7 @@ import tempfile
 from telegram import Update, ChatPermissions
 from telegram.ext import (
     Application, MessageHandler,
-    filters, ContextTypes, EditedMessageHandler
+    filters, ContextTypes,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -714,7 +714,7 @@ def main():
     token = os.environ.get("BOT_TOKEN", "8159446452:AAGtFNGAfMxoC2iPwE06Z0gnW0IUUvmAEa0")
     app = Application.builder().token(token).build()
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_member))
-    app.add_handler(EditedMessageHandler(filters.TEXT, edited_message_handler))
+    app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.TEXT, edited_message_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
     print("✅ البوت شغال...")
     app.run_polling()
