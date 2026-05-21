@@ -118,7 +118,7 @@ async def get_target_user(update, context):
                 return ent.user
     return None
 
-# ═══ تحميل يوتيوب وتيكتوك (نفس دوالك السابقة) ═══
+# ═══ تحميل ميديا يوتيوب وتيكتوك ═══
 async def download_youtube(url):
     try:
         from yt_dlp import YoutubeDL
@@ -169,6 +169,59 @@ waad_replies = [
 ]
 
 # ═══════════════════════════════════════════════
+#  نصوص مصفوفات الأوامر للأزرار التفاعلية
+# ═══════════════════════════════════════════════
+TEXT_MAIN_MENU = "📋 <b>أهلاً بك في لوحة أوامر البوت المتكاملة</b>\n\nالرجاء اختيار القسم الذي تود تصفحه من الأزرار بالأسفل 👇"
+
+TEXT_ADMIN_CMDS = (
+    "👑 <b>أوامر المالك والمدراء:</b>\n\n"
+    "• <code>رفع مالك | مدير | مميز</code> — بالرد أو المنشن\n"
+    "• <code>تنزيل رتبة | الرتب</code> — مسح أو عرض الرتب بالجروب\n"
+    "• <code>طرد | حظر | فك حظر</code> — التحكم بالأعضاء المزعجين\n"
+    "• <code>كتم | الغاء كتم</code> — كتم وإتاحة الكلام برتبة حديثة\n"
+    "• <code>تحذير | الغاء تحذير | تحذيراتي</code> — نظام التحذيرات التلقائي\n"
+    "• <code>قفل الشات | فتح الشات</code> — قفل الشات بشكل كامل\n"
+    "• <code>منع كلمة X | حذف كلمة X | الكلمات</code> — الفلتر الذكي للكلمات\n"
+    "• <code>روابط تشغيل | روابط ايقاف</code> — حماية الجروب من السبام والروابط\n"
+    "• <code>الترحيب تشغيل | الترحيب ايقاف</code> — رسائل ترحيب مع الأفاتار\n"
+    "• <code>تعديل تشغيل | تعديل ايقاف</code> — رصد وحفظ الرسائل قبل التعديل\n"
+    "• <code>فحص بوتات</code> — كشف البوتات الدخيلة بالكروب\n"
+    "• <code>اضافة منشن اسم @يوزر | حذف منشن اسم | المنشنات</code>\n"
+    "• <code>منشن الكل</code> — الإشارة لكل المشرفين\n"
+    "• <code>استفتاء سؤال | خيار1 | خيار2</code> — إنشاء تصويت عام\n"
+    "• <code>مسح X</code> — حذف عدد X من الرسائل السابقة (للرتب)"
+)
+
+TEXT_FUN_CMDS = (
+    "👥 <b>أوامر التسلية والخدمات العامة:</b>\n\n"
+    "• <code>همسة</code> — بالرد على العضو لإرسال همسة سرية مشفرة بالخاص 🤫\n"
+    "• <code>ايدي</code> — عرض بطاقة معلوماتك أو معلومات عضو (رد/منشن)\n"
+    "• <code>افتار</code> — عرض وتحميل صورة بروفايل أي عضو\n"
+    "• <code>زواج | طلاق | شريكي</code> — نظام الزواج والارتباط الترفيهي\n"
+    "• <code>انطقي نص</code> — جعل البوت يكرر النص المكتوب خلفك\n"
+    "• <code>لو خيروك</code> — توليد سؤال عشوائي ومحرج للجروب\n"
+    "• <code>وعد</code> — ردود عشوائية وطريفة من وعد"
+)
+
+TEXT_DOWNLOAD_CMDS = (
+    "📥 <b>أوامر وبوتات التحميل الذكية:</b>\n\n"
+    "• <b>تحميل صوتي من اليوتيوب:</b>\n"
+    "فقط أرسل أي رابط يوتيوب أو يوتيوب شورتس بالجروب وسيتم تحويله فوراً إلى ملف صوتي MP3 عالي الدقة.\n\n"
+    "• <b>تحميل مرئي من التيكتوك:</b>\n"
+    "أرسل رابط فيديو تيك توك وسيتكفل البوت بجلبه وتحميله بصيغة فيديو بدون علامة مائية وبشكل مباشر."
+)
+
+def get_main_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛡️ أوامر الإدارة والحماية", callback_data="cmd_admin")],
+        [InlineKeyboardButton("🎮 أوامر التسلية والعامة", callback_data="cmd_fun")],
+        [InlineKeyboardButton("📥 قسم بوتات التحميل", callback_data="cmd_dl")]
+    ])
+
+def get_back_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data="cmd_main")]])
+
+# ═══════════════════════════════════════════════
 #  ميزة الهمسة السرية الـ Inline والـ Start Command
 # ═══════════════════════════════════════════════
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -206,14 +259,12 @@ async def handle_private_whisper(update: Update, context: ContextTypes.DEFAULT_T
 
     w_id = str(random.randint(100000, 999999))
     
-    # حفظ الهمسة بالفايربيس حتى ما تضيع أبداً
     db_set(f"whispers/{w_id}", {
         'text': msg.text,
         'sender': msg.from_user.id,
         'target': target_id
     })
     
-    # تنظيف الـ user_data
     context.user_data.pop('whisper_target', None)
     context.user_data.pop('whisper_chat', None)
     
@@ -233,23 +284,56 @@ async def handle_private_whisper(update: Update, context: ContextTypes.DEFAULT_T
     )
     await msg.reply_text("✅ تم تشفير همستك وإرسالها للكروب بنجاح!")
 
-async def whisper_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ═══════════════════════════════════════════════
+#  معالج ضغطات الأزرار (الهمسات السرية + تصفح الأوامر)
+# ═══════════════════════════════════════════════
+async def inline_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    data = query.data
     
-    w_id = query.data.replace('show_w_', '')
-    w = db_get(f"whispers/{w_id}", None)
-    
-    if w:
-        if query.from_user.id == w['target'] or query.from_user.id == w['sender']:
-            await query.answer(text=f"💬 الهمسة السرية:\n{w['text']}", show_alert=True)
+    # ── أولاً: منطق فك تشفير الهمسة السرية ──
+    if data.startswith('show_w_'):
+        await query.answer()
+        w_id = data.replace('show_w_', '')
+        w = db_get(f"whispers/{w_id}", None)
+        
+        if w:
+            if query.from_user.id == w['target'] or query.from_user.id == w['sender']:
+                await query.answer(text=f"💬 الهمسة السرية:\n{w['text']}", show_alert=True)
+            else:
+                await query.answer(text="الهمسة مو إلك عيني، لا تتباوع! ❌👀", show_alert=True)
         else:
-            await query.answer(text="الهمسة مو إلك عيني، لا تتباوع! ❌👀", show_alert=True)
-    else:
-        await query.answer(text="عذراً، هذه الهمسة قديمة أو غير موجودة.", show_alert=True)
+            await query.answer(text="عذراً، هذه الهمسة قديمة أو غير موجودة.", show_alert=True)
+        return
+
+    # ── ثانياً: منطق التنقل بين أزرار لوحة الأوامر التفاعلية ──
+    await query.answer()
+    if data == "cmd_main":
+        await query.edit_message_text(text=TEXT_MAIN_MENU, parse_mode="HTML", reply_markup=get_main_keyboard())
+    elif data == "cmd_admin":
+        await query.edit_message_text(text=TEXT_ADMIN_CMDS, parse_mode="HTML", reply_markup=get_back_keyboard())
+    elif data == "cmd_fun":
+        await query.edit_message_text(text=TEXT_FUN_CMDS, parse_mode="HTML", reply_markup=get_back_keyboard())
+    elif data == "cmd_dl":
+        await query.edit_message_text(text=TEXT_DOWNLOAD_CMDS, parse_mode="HTML", reply_markup=get_back_keyboard())
 
 # ═══════════════════════════════════════════════
-#  المعالج الرئيسي للمجموعات
+#  هاندلر حفظ وحقن الرسائل الأصلية لميزة التعديل
+# ═══════════════════════════════════════════════
+async def track_messages_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text: 
+        return
+    if update.message.text.startswith('/'):
+        return
+        
+    chat_id = update.message.chat.id
+    message_id = update.message.message_id
+    text = update.message.text
+    
+    db_set(f"messages/{chat_id}/{message_id}", {"text": text})
+
+# ═══════════════════════════════════════════════
+#  المعالج الرئيسي للمجموعات والجروبات
 # ═══════════════════════════════════════════════
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return
@@ -258,12 +342,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = msg.chat.id
     user_id = msg.from_user.id
     s = get_settings(chat_id)
-
-    # إذا كانت الرسالة بالخاص وجاري كتابة همسة
-    if msg.chat.type == 'private':
-        if 'whisper_target' in context.user_data:
-            await handle_private_whisper(update, context)
-        return
 
     # ══ قفل الشات ══
     if s.get("locked", False):
@@ -313,52 +391,9 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(f"يا {msg.from_user.first_name}، اضغط على الزر بالأسفل واكتب همستك بالخاص 🤫", reply_markup=markup)
         return
 
-    # ══ بقية الأوامر السابقة ══
+    # ══ استدعاء لوحة الأوامر تفاعلياً بالأزرار ══
     if text == "الاوامر":
-        t = (
-            "📋 *قائمة الأوامر مدمجة*\n\n"
-            "👑 *مالك فقط:*\n"
-            "`رفع مالك` — تعيين مالك (رد/منشن)\n"
-            "`رفع مدير` — تعيين مدير\n"
-            "`رفع مميز` — تعيين مميز\n"
-            "`تنزيل رتبة` — إزالة رتبة\n"
-            "`الرتب` — عرض الرتب\n"
-            "`طرد` — طرد عضو\n"
-            "`تحذير` / `الغاء تحذير` — تحذير / إلغاء\n"
-            "`منع كلمة X` — إضافة كلمة محظورة\n"
-            "`حذف كلمة X` — حذف كلمة محظورة\n"
-            "`الكلمات` — عرض الكلمات المحظورة\n"
-            "`الترحيب تشغيل` / `الترحيب ايقاف`\n"
-            "`تعديل تشغيل` / `تعديل ايقاف` — إشعار تعديل الرسائل\n"
-            "`روابط تشغيل` / `روابط ايقاف` — حماية الروابط\n"
-            "`فحص بوتات` — كشف البوتات\n"
-            "`اضافة منشن اسم @يوزر` — ربط اسم بمنشن\n"
-            "`حذف منشن اسم` — حذف ربط\n"
-            "`المنشنات` — عرض المنشنات\n\n"
-            "🛡 *مدير + مالك:*\n"
-            "`حظر` / `فك حظر` — بالرد أو المنشن\n"
-            "`كتم` / `الغاء كتم`\n"
-            "`قفل الشات` / `فتح الشات`\n"
-            "`استفتاء سؤال | خيار1 | خيار2`\n"
-            "`منشن الكل`\n\n"
-            "⭐ *كل الرتب:*\n"
-            "`مسح X` — حذف X رسالة\n\n"
-            "👥 *للجميع:*\n"
-            "`همسة` — بالرد على العضو لإرسال همسة سرية 🤫\n"
-            "`تحذيراتي` — عدد تحذيراتك\n"
-            "`ايدي` — معلوماتك أو معلومات عضو (رد/منشن)\n"
-            "`افتار` — عرض أفاتار\n"
-            "`زواج` — زواج (رد/منشن)\n"
-            "`طلاق` — طلاق\n"
-            "`شريكي` — عرض شريكك\n"
-            "`انطقي نص` — البوت يكرر النص\n"
-            "`لو خيروك` — سؤال عشوائي\n"
-            "`وعد` — رد عشوائي\n\n"
-            "📥 *تحميل:*\n"
-            "أرسل رابط يوتيوب ← صوت MP3\n"
-            "أرسل رابط تيكتوك ← فيديو\n"
-        )
-        await msg.reply_text(t, parse_mode="Markdown")
+        await msg.reply_text(text=TEXT_MAIN_MENU, parse_mode="HTML", reply_markup=get_main_keyboard())
         return
 
     if text in ("رفع مالك", "رفع مدير", "رفع مميز") and priv_owner:
@@ -424,9 +459,11 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not target: return await msg.reply_text("رد على رسالة العضو أو اذكره.")
         await context.bot.restrict_chat_member(chat_id, target.id, ChatPermissions(
             can_send_messages=True, can_send_media_messages=True,
-            can_send_other_messages=True, can_add_web_page_previews=True
+            can_send_polls=True, can_send_other_messages=True,
+            can_add_web_page_previews=True, can_change_info=False,
+            can_invite_users=True, can_pin_messages=False
         ))
-        await msg.reply_text(f"🔊 رفع الكتم عن {target.first_name}.")
+        await msg.reply_text(f"🔊 رفع الكتم عن {target.first_name} وبإمكانه التحدث الآن.")
         return
 
     if text == "تحذير" and priv_owner:
@@ -704,31 +741,57 @@ async def welcome_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else: await update.message.reply_text(f"👋 أهلاً {name} في المجموعة! 🎉", parse_mode="HTML")
             except: await update.message.reply_text(f"👋 أهلاً {name} في المجموعة! 🎉", parse_mode="HTML")
 
-# ═══ إشعار تعديل الرسائل ═══
+# ═══ إشعار تعديل الرسائل المحدث ✏️ ═══
 async def edited_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.edited_message: return
+    if not update.edited_message: 
+        return
     chat_id = update.edited_message.chat.id
     s = get_settings(chat_id)
-    if not s.get("edit_notify", True): return
+    if not s.get("edit_notify", True): 
+        return
+        
     msg = update.edited_message
     user = msg.from_user
-    new_text = msg.text or "[ميديا]"
+    message_id = msg.message_id
+    
+    new_text = msg.text or "[ميديا/ملف]"
     name = f'<a href="tg://user?id={user.id}">{user.first_name}</a>'
-    await context.bot.send_message(chat_id, f"✏️ {name} عدّل رسالته:\n\n{new_text}", parse_mode="HTML")
+    
+    old_text = "[تعذر جلب النص القديم]"
+    stored = db_get(f"messages/{chat_id}/{message_id}", None)
+    if stored and "text" in stored:
+        old_text = stored["text"]
+        
+    db_set(f"messages/{chat_id}/{message_id}", {"text": new_text})
+    
+    notification_text = (
+        f"✏️ <b>إشعار تعديل رسالة</b>\n\n"
+        f"👤 <b>المستخدم:</b> {name}\n"
+        f"──────────────\n"
+        f"❌ <b>قبل التعديل:</b>\n<code>{old_text}</code>\n\n"
+        f"✅ <b>بعد التعديل:</b>\n<code>{new_text}</code>"
+    )
+    await context.bot.send_message(chat_id, notification_text, parse_mode="HTML")
 
 # ═══ Main ═══
 def main():
-    token = os.environ.get("BOT_TOKEN", "8159446452:AAGrkJbtEFoKgXab19l7tX36SDTowRvPxB4")
+    token = os.environ.get("BOT_TOKEN", "8159446452:AAHvUE5aEvuTmGfwAYAV7EqfshKD9Nv-B5o")
     app = Application.builder().token(token).build()
     
-    # الهاندلرات
+    # 1. هاندلرات الأوامر والـ Callback والستاتس
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CallbackQueryHandler(whisper_callback, pattern=r"^show_w_"))
+    
+    # دالة كولباك موحدة الآن تستقبل ضغطات الهمسة + أزرار التنقل بقائمة الأوامر
+    app.add_handler(CallbackQueryHandler(inline_button_callback, pattern=r"^(show_w_|cmd_)"))
+    
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_member))
     app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.TEXT, edited_message_handler))
     
-    # هذا الهاندلر يستقبل الخاص والكروبات معاً
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    # 2. هاندلر تتبع وحفظ الرسائل العادية
+    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, track_messages_handler), group=1)
+    
+    # 3. هاندلر المعالجة الرئيسي للجروبات والخاص
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle), group=2)
     
     print("✅ البوت شغال ومتصل بـ Firebase...")
     app.run_polling()
