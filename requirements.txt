@@ -1,3 +1,4 @@
 python-telegram-bot==21.6
+firebase-admin
 requests
 yt-dlp
