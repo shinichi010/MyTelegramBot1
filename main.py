@@ -20,12 +20,23 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════
 #  تهيئة الفايربيس (Firebase Initialization)
 # ═══════════════════════════════════════════════
+# ═══════════════════════════════════════════════
+#  تهيئة الفايربيس (Firebase Initialization)
+# ═══════════════════════════════════════════════
 try:
     cred = credentials.Certificate('firebase.json')
+    
+    # هنا التعديل: البوت سيحاول أولاً قراءة الرابط من متغيرات Railway
+    # وإذا لم يجده، سيستخدم الرابط الافتراضي المكتوب بالأسفل
+    firebase_url = os.environ.get(
+        'DATABASE_URL', 
+        'https://mytelegrambotdb-default-rtdb.europe-west1.firebasedatabase.app/'
+    )
+    
     firebase_admin.initialize_app(cred, {
-        'DATABASE_URL': 'https://mytelegrambotdb-default-rtdb.europe-west1.firebasedatabase.app/'  # تأكد من مطابقة الرابط الخاص بك
+        'DATABASE_URL': firebase_url
     })
-    logger.info("✅ تم الاتصال بقاعدة بيانات Firebase بنجاح!")
+    logger.info(f"✅ تم الاتصال بقاعدة بيانات Firebase بنجاح! الرابط المستخدم: {firebase_url}")
 except Exception as e:
     logger.error(f"❌ فشل الاتصال بـ Firebase: {e}")
 
