@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 try:
     cred = credentials.Certificate('firebase.json')
     firebase_admin.initialize_app(cred, {
-        'databaseURL': 'https://mytelegrambotdb-default-rtdb.firebaseio.com/'  # تأكد من مطابقة الرابط الخاص بك
+        'DATABASE_URL': 'https://mytelegrambotdb-default-rtdb.europe-west1.firebasedatabase.app/'  # تأكد من مطابقة الرابط الخاص بك
     })
     logger.info("✅ تم الاتصال بقاعدة بيانات Firebase بنجاح!")
 except Exception as e:
