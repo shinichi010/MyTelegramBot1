@@ -635,6 +635,50 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
 
+# ═══════════════════════════════════════
+# ترحيب الأعضاء الجدد
+# ═══════════════════════════════════════
+async def welcome_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not update.message:
+        return
+
+    for member in update.message.new_chat_members:
+
+        if member.is_bot:
+            continue
+
+        chat_id = update.message.chat.id
+
+        try:
+            photos = await context.bot.get_user_profile_photos(
+                member.id,
+                limit=1
+            )
+
+            caption = (
+                f"👋 أهلاً نورت المجموعة\n\n"
+                f"✨ {member.first_name}"
+            )
+
+            if photos.total_count > 0:
+
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photos.photos[0][-1].file_id,
+                    caption=caption
+                )
+
+            else:
+
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=caption
+                )
+
+        except Exception as e:
+            print(e)
+
 # ═══════════════════════════════════════════════════════════════════
 # 9. تشغيل البوت
 # ═══════════════════════════════════════════════════════════════════
@@ -686,6 +730,13 @@ def main():
         ),
         group=2
     )
+
+app.add_handler(
+    MessageHandler(
+        filters.StatusUpdate.NEW_CHAT_MEMBERS,
+        welcome_member
+    )
+)
 
     print("✅ Bot Started")
 
