@@ -25,11 +25,11 @@ logger = logging.getLogger(__name__)
 # 1. مصفوفات التسلية والقوائم
 # ═══════════════════════════════════════════════════════════════════
 WA3ED_LIST = [
-    "وعد: تعزم أول شخص يرد عليك على شاورما 🌯",
-    "وعد: تخلي صورتك بالبروفايل صورة طفل لمدة يوم 👶",
-    "وعد: تكتب بالكروب 'أنا أحبكم كلكم' وتثبتها دقيقة ❤️",
-    "وعد: تدز بصمة صوتية تغني بيها للكروب 🎤",
-    "وعد: تعترف بأكثر موقف محرج صار وياك 🫣"
+    "عيونها البيض والسود ",
+    "شتريد ؟",
+    "هلا يا بعد قلبي ",
+    "حل عن رجلي",
+    "اتسرسح منا وليدي"
 ]
 
 KHAYROK_LIST = [
@@ -62,7 +62,7 @@ TEXT_FUN_CMDS = (
 )
 TEXT_DOWNLOAD_CMDS = (
     "📥 <b>قسم التحميل المتطور:</b>\n"
-    "• أرسل رابط يوتيوب وسيعرض لك البوت أزرار لاختيار الجودة والصيغة.\n"
+    "• أرسل رابط يوتيوب (أو شورت) وسيعرض لك البوت أزرار لاختيار الجودة والصيغة.\n"
     "• أرسل رابط تويتر (X) وسيحمله كفيديو فوراً.\n"
     "• أرسل رابط تيك توك وسيحمله كفيديو أو ألبوم صور مباشر بدون علامة مائية."
 )
@@ -151,7 +151,7 @@ async def ask_deepseek(prompt: str) -> str:
     except: return "اعذرني، السيرفر مشغول حالياً 😅"
 
 # ═══════════════════════════════════════════════════════════════════
-# 5. دوال التحميل (يوتيوب، تويتر، تيك توك)
+# 5. دوال التحميل والتحديث للتقدم
 # ═══════════════════════════════════════════════════════════════════
 active_downloads = {}
 
@@ -161,18 +161,21 @@ def progress_hook(d, msg_id):
         percent = re.sub(r'\x1b\[[0-9;]*m', '', percent)
         active_downloads[msg_id] = percent
 
-async def update_progress(context, chat_id, msg_id, status_msg_id):
+async def update_progress(context, chat_id, msg_id, status_msg_id, is_photo=False):
     last = ""
     while msg_id in active_downloads:
         current = active_downloads.get(msg_id, "")
         if current and current != last:
             try:
-                await context.bot.edit_message_text(f"⏳ جاري التحميل: {current}", chat_id=chat_id, message_id=status_msg_id)
+                if is_photo:
+                    await context.bot.edit_message_caption(chat_id=chat_id, message_id=status_msg_id, caption=f"⏳ جاري التحميل: {current}")
+                else:
+                    await context.bot.edit_message_text(f"⏳ جاري التحميل: {current}", chat_id=chat_id, message_id=status_msg_id)
                 last = current
             except: pass
         await asyncio.sleep(2.5)
 
-async def download_media(url, media_type, quality, msg_id, chat_id, context, status_msg_id):
+async def download_media(url, media_type, quality, msg_id, chat_id, context, status_msg_id, is_photo=False):
     tmp = tempfile.mkdtemp()
     ydl_opts = {
         'outtmpl': os.path.join(tmp, '%(title)s.%(ext)s'),
@@ -182,7 +185,7 @@ async def download_media(url, media_type, quality, msg_id, chat_id, context, sta
         'nocheckcertificate': True,
         'geo_bypass': True,
         'extractor_retries': 3,
-        'ffmpeg_location': imageio_ffmpeg.get_ffmpeg_exe(),  # استخدام مسار الـ ffmpeg المدمج لليوتيوب
+        'ffmpeg_location': imageio_ffmpeg.get_ffmpeg_exe(),
         'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'}
     }
 
@@ -197,7 +200,7 @@ async def download_media(url, media_type, quality, msg_id, chat_id, context, sta
         ydl_opts['merge_output_format'] = 'mp4'
 
     active_downloads[msg_id] = "0%"
-    progress_task = asyncio.create_task(update_progress(context, chat_id, msg_id, status_msg_id))
+    progress_task = asyncio.create_task(update_progress(context, chat_id, msg_id, status_msg_id, is_photo))
 
     def run():
         with YoutubeDL(ydl_opts) as ydl:
@@ -236,7 +239,60 @@ def download_tiktok(url):
     return None
 
 # ═══════════════════════════════════════════════════════════════════
-# 6. الهاندلرات (بداية، همسة، كولباك، مسار الرسائل)
+# 6. الدوال الفرعية الموحدة لمعالجة الروابط
+# ═══════════════════════════════════════════════════════════════════
+async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, user_id: int):
+    msg = update.message
+    url = re.search(r'https?://[^\s]+', text).group()
+    wait_msg = await msg.reply_text("🔍 جاري جلب المعلومات من يوتيوب...")
+    try:
+        with YoutubeDL({'quiet': True, 'noplaylist': True, 'nocheckcertificate': True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+        url_hash = str(random.randint(1000, 9999))
+        context.bot_data[url_hash] = url
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎬 تحميل فيديو", callback_data=f"dl_opts_{user_id}_{url_hash}")],
+            [InlineKeyboardButton("🎵 تحميل صوت", callback_data=f"dl_audio_{user_id}_{url_hash}")]
+        ])
+        if info.get('thumbnail'): 
+            await msg.reply_photo(info['thumbnail'], caption=info.get('title', 'اختر الصيغة:'), reply_markup=keyboard)
+        else: 
+            await msg.reply_text(info.get('title', 'اختر الصيغة:'), reply_markup=keyboard)
+        await wait_msg.delete()
+    except Exception as e: 
+        await wait_msg.edit_text("❌ فشل جلب بيانات الرابط.")
+
+async def handle_twitter_link(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, chat_id: int):
+    msg = update.message
+    url = re.search(r'https?://[^\s]+', text).group()
+    wait_msg = await msg.reply_text("⏳ جاري تحميل المقطع من تويتر...")
+    filepath, title, tmp_dir = await download_media(url, "video", "best", msg.message_id, chat_id, context, wait_msg.message_id, is_photo=False)
+    if filepath and os.path.exists(filepath):
+        await wait_msg.edit_text("📤 جاري الرفع...")
+        with open(filepath, 'rb') as f: await context.bot.send_video(chat_id, f, caption="✅ تم التحميل من X")
+        await wait_msg.delete()
+    else: await wait_msg.edit_text("❌ فشل التحميل من تويتر.")
+    if tmp_dir: shutil.rmtree(tmp_dir, ignore_errors=True)
+
+async def handle_tiktok_link(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, chat_id: int, reply_to_id: int):
+    url = re.search(r'https?://[^\s]+', text).group()
+    wait_msg = await update.message.reply_text("⏳ جاري تحميل التيك توك...")
+    data = download_tiktok(url)
+    if data:
+        caption = f"👤 <b>الحساب:</b> @{data['author']}"
+        try:
+            if data['type'] == 'images':
+                media = [InputMediaPhoto(img) for img in data['data']]
+                await context.bot.send_media_group(chat_id, media, reply_to_message_id=reply_to_id)
+                if data.get('music'): await context.bot.send_audio(chat_id, data['music'], caption=caption, parse_mode="HTML")
+            else: 
+                await context.bot.send_video(chat_id, data['data'], caption=caption, parse_mode="HTML", reply_to_message_id=reply_to_id)
+            await wait_msg.delete()
+        except Exception as e: await wait_msg.edit_text("❌ حدث خطأ أثناء الإرسال.")
+    else: await wait_msg.edit_text("❌ فشل التحميل من تيك توك.")
+
+# ═══════════════════════════════════════════════════════════════════
+# 7. الهاندلرات (بداية، همسة، كولباك، مسار الرسائل)
 # ═══════════════════════════════════════════════════════════════════
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -249,7 +305,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['whisper_chat'] = chat_id
             await msg.reply_text("🔒 *أرسل همستك الآن هنا بالخاص:* \n(سيتم إرسالها مشفرة للكروب تلقائياً)", parse_mode="Markdown")
         except: await msg.reply_text("حدث خطأ في رابط الهمسة.")
-    else: await msg.reply_text("أهلاً بك! أنا بوت الإدارة الذكي 🚀")
+    else: await msg.reply_text("أهلاً بك! أنا بوت الإدارة والتحميل الذكي 🚀\nأرسل أي رابط هنا (يوتيوب، تيك توك، تويتر) لتحميله فوراً، أو تحدث معي مباشرة لأرد عليك بالذكاء الاصطناعي!")
 
 async def handle_private_whisper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -276,14 +332,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
 
-    # ── الهمسة السرية ──
+    # ── حل مشكلة الهمسة السرية ──
     if data.startswith('show_w_'):
-        await query.answer()
         w = db_get(f"whispers/{data.replace('show_w_', '')}", None)
         if w:
-            if query.from_user.id in [w['target'], w['sender']]: await query.answer(text=f"💬 الهمسة:\n{w['text']}", show_alert=True)
-            else: await query.answer(text="الهمسة مو إلك عيني! ❌👀", show_alert=True)
-        else: await query.answer(text="هذه الهمسة قديمة أو غير موجودة.", show_alert=True)
+            if query.from_user.id in [w['target'], w['sender']]: 
+                await query.answer(text=f"💬 الهمسة:\n{w['text']}", show_alert=True)
+            else: 
+                await query.answer(text="الهمسة مو إلك عيني! ❌👀", show_alert=True)
+        else: 
+            await query.answer(text="هذه الهمسة قديمة أو غير موجودة.", show_alert=True)
         return
 
     # ── قوائم الأوامر ──
@@ -295,15 +353,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "cmd_dl": await query.edit_message_text(TEXT_DOWNLOAD_CMDS, parse_mode="HTML", reply_markup=get_back_keyboard())
         return
 
-    # ── أزرار التحميل ──
+    # ── حل مشكلة أزرار جودة التحميل ──
     if data.startswith("dl_"):
-        await query.answer()
         parts = data.split('_')
         action, uid, url_hash = parts[1], parts[2], parts[3]
 
-        if str(query.from_user.id) != uid: return await query.answer("هذه الأزرار لطلب شخص آخر!", show_alert=True)
+        if str(query.from_user.id) != uid: 
+            return await query.answer("هذه الأزرار لطلب شخص آخر!", show_alert=True)
+            
+        await query.answer()
         url = context.bot_data.get(url_hash)
-        if not url: return await query.edit_message_text("❌ الرابط منتهي الصلاحية، أعد إرساله.")
+        
+        is_photo = bool(query.message.photo) # فحص نوع الرسالة إذا كانت ميديا أو نص لتجنب الكراش
+
+        if not url: 
+            if is_photo: await query.edit_message_caption("❌ الرابط منتهي الصلاحية، أعد إرساله.")
+            else: await query.edit_message_text("❌ الرابط منتهي الصلاحية، أعد إرساله.")
+            return
 
         if action == "opts":
             k = InlineKeyboardMarkup([
@@ -312,20 +378,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
             return await query.edit_message_reply_markup(k)
 
-        await query.edit_message_text("⏳ جاري تحضير الملف...")
+        if is_photo: await query.edit_message_caption("⏳ جاري تحضير الملف...")
+        else: await query.edit_message_text("⏳ جاري تحضير الملف...")
+        
         media_type = "audio" if action == "audio" else "video"
         quality = action.replace("vid", "") if "vid" in action else None
 
-        filepath, title, tmp_dir = await download_media(url, media_type, quality, query.message.message_id, query.message.chat_id, context, query.message.message_id)
+        filepath, title, tmp_dir = await download_media(url, media_type, quality, query.message.message_id, query.message.chat_id, context, query.message.message_id, is_photo=is_photo)
         if filepath and os.path.exists(filepath):
-            await query.edit_message_text("📤 جاري الرفع...")
+            try:
+                if is_photo: await query.edit_message_caption("📤 جاري الرفع...")
+                else: await query.edit_message_text("📤 جاري الرفع...")
+            except: pass
             with open(filepath, 'rb') as f:
                 if media_type == "audio": await context.bot.send_audio(query.message.chat_id, f, title=title)
                 else: await context.bot.send_video(query.message.chat_id, f, caption=title)
             await query.message.delete()
-        else: await query.edit_message_text("❌ فشل التحميل. حاول مرة أخرى.")
+        else:
+            try:
+                if is_photo: await query.edit_message_caption("❌ فشل التحميل. حاول مرة أخرى.")
+                else: await query.edit_message_text("❌ فشل التحميل. حاول مرة أخرى.")
+            except: pass
         
-        # تنظيف الذاكرة
         if tmp_dir: shutil.rmtree(tmp_dir, ignore_errors=True)
 
 async def track_messages_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -355,7 +429,7 @@ async def welcome_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except: await update.message.reply_text(f"👋 أهلاً {name} في المجموعة! 🎉", parse_mode="HTML")
 
 # ═══════════════════════════════════════════════════════════════════
-# 7. المعالج الرئيسي للرسائل
+# 8. المعالج الرئيسي للرسائل (كروبات + خاص مطور)
 # ═══════════════════════════════════════════════════════════════════
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return
@@ -364,16 +438,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = msg.chat_id
     user_id = msg.from_user.id
 
+    if not text: return
+
+    # 📥 [أولاً] تفعيل ميزات الخاص الكاملة (تحميل + ذكاء اصطناعي حر)
     if msg.chat.type == 'private':
-        if 'whisper_target' in context.user_data: await handle_private_whisper(update, context)
+        if 'whisper_target' in context.user_data: 
+            await handle_private_whisper(update, context)
+            return
+        if re.search(r'(youtube\.com|youtu\.be|shorts)', text, re.I):
+            await handle_youtube_link(update, context, text, user_id)
+            return
+        if re.search(r'(x\.com|twitter\.com)', text, re.I):
+            await handle_twitter_link(update, context, text, chat_id)
+            return
+        if 'tiktok.com' in text:
+            await handle_tiktok_link(update, context, text, chat_id, msg.message_id)
+            return
+        if not text.startswith('/'):
+            await context.bot.send_chat_action(chat_id, 'typing')
+            reply = await ask_deepseek(text)
+            await msg.reply_text(reply)
+            return
         return
 
-    if not text: return
+    # 👥 [ثانياً] التعامل مع المجموعات (الكروبات)
     settings = get_settings(chat_id)
     priv_owner = await is_privileged(update, context, ROLE_OWNER)
     priv_manager = await is_privileged(update, context, ROLE_MANAGER)
 
-    # ── 1. أوامر التسلية والإضافات ──
     if text == "الاوامر": return await msg.reply_text(TEXT_MAIN_MENU, parse_mode="HTML", reply_markup=get_main_keyboard())
     if text == "نسبة الحب" and msg.reply_to_message:
         return await msg.reply_text(f"💘 نسبة الحب بين {msg.from_user.first_name} و {msg.reply_to_message.from_user.first_name} هي: {random.randint(0, 100)}%")
@@ -394,51 +486,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔒 اضغط هنا واكتب الهمسة", url=f"t.me/{context.bot.username}?start=w_{user_id}_{target.id}_{str(chat_id).replace('-','m')}")]])
         return await msg.reply_text(f"يا {msg.from_user.first_name}، اضغط جوا واكتب همستك بالخاص 🤫", reply_markup=markup)
 
-    # 📌 أمر التحويل المطور المعتمد على الأدوات المدمجة لـ imageio-ffmpeg
     if text == "تحويل" and msg.reply_to_message and msg.reply_to_message.video:
         wait = await msg.reply_text("🔄 جاري استخراج الصوت...")
         try:
-            # جلب مسار ffmpeg المدمج تلقائياً دون الحاجة للنظام
             ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-            
             file = await msg.reply_to_message.video.get_file()
             in_p = f"tmp_v_{msg.message_id}.mp4"
             out_p = f"tmp_a_{msg.message_id}.mp3"
-            
-            # تحميل الفيديو للسيرفر
             await file.download_to_drive(custom_path=in_p)
-            
-            # تشغيل ffmpeg المدمج والتقاط الخطأ إذا وجد
-            result = subprocess.run(
-                [ffmpeg_exe, "-i", in_p, "-q:a", "0", "-map", "a", out_p, "-y"],
-                capture_output=True, text=True
-            )
-            
+            result = subprocess.run([ffmpeg_exe, "-i", in_p, "-q:a", "0", "-map", "a", out_p, "-y"], capture_output=True, text=True)
             if os.path.exists(out_p):
-                with open(out_p, 'rb') as audio: 
-                    await msg.reply_audio(audio)
+                with open(out_p, 'rb') as audio: await msg.reply_audio(audio)
                 await wait.delete()
             else:
-                error_msg = result.stderr if result.stderr else "ffmpeg لم يقم بإنشاء ملف الخرج لأسباب مجهولة."
-                raise Exception(error_msg)
-                
+                raise Exception(result.stderr if result.stderr else "فشل استخراج الصوت.")
             if os.path.exists(in_p): os.remove(in_p)
             if os.path.exists(out_p): os.remove(out_p)
-            
         except Exception as e:
             logger.error(f"Conversion error: {e}")
-            await wait.edit_text(f"❌ <b>فشل التحويل!</b>\n\n<b>الخطأ التقني المكتشف:</b>\n<code>{str(e)[:300]}</code>", parse_mode="HTML")
+            await wait.edit_text(f"❌ <b>فشل التحويل!</b>\n\n<code>{str(e)[:300]}</code>", parse_mode="HTML")
         return
 
-    # ── 2. الأوامر الإدارية المهمة ──
+    # الأوامر الإدارية
     if text in ("رفع مالك", "رفع مدير", "رفع مميز") and priv_owner:
         r_map = {"رفع مالك": ROLE_OWNER, "رفع مدير": ROLE_MANAGER, "رفع مميز": ROLE_VIP}
         tgt = await get_target_user(update, context)
-        if tgt: set_role(chat_id, tgt.id, r_map[text]); await msg.reply_text(f"✅ صار {tgt.first_name} {ROLE_LABEL[r_map[text]]}.")
+        if tgt: set_role(chat_id, tgt.id, r_map[text]); await msg.reply_text(f"✅ الحلو صار  {tgt.first_name} {ROLE_LABEL[r_map[text]]}.")
         return
     if text == "تنزيل رتبة" and priv_owner:
         tgt = await get_target_user(update, context)
-        if tgt: remove_role(chat_id, tgt.id); await msg.reply_text(f"✅ تمت إزالة رتبة {tgt.first_name}.")
+        if tgt: remove_role(chat_id, tgt.id); await msg.reply_text(f"✅ تمت إزالة رتبة الحلو {tgt.first_name}.")
         return
     if text == "طرد" and priv_manager:
         tgt = await get_target_user(update, context)
@@ -469,64 +546,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if msg.reply_to_message: await context.bot.unpin_chat_message(chat_id, msg.reply_to_message.message_id)
         return
 
-    # ── 3. الذكاء الاصطناعي ──
+    # التحكم بالذكاء الاصطناعي في الكروب
     if text == "تشغيل سيك" and priv_owner:
-        settings["ai_mode"] = True; save_settings(chat_id, settings); return await msg.reply_text("🤖 تم تفعيل الذكاء الاصطناعي!")
+        settings["ai_mode"] = True; save_settings(chat_id, settings); return await msg.reply_text("🤖 تم تفعيل الذكاء الاصطناعي في الكروب!")
     if text == "ايقاف سيك" and priv_owner:
-        settings["ai_mode"] = False; save_settings(chat_id, settings); return await msg.reply_text("😴 تم إيقاف الذكاء الاصطناعي.")
-    
+        settings["ai_mode"] = False; save_settings(chat_id, settings); return await msg.reply_text("😴 تم إيقاف الذكاء الاصطناعي في الكروب.")
+
+    # فحص الروابط بالكروبات
+    if re.search(r'(youtube\.com|youtu\.be|shorts)', text, re.I):
+        await handle_youtube_link(update, context, text, user_id)
+        return
+    if re.search(r'(x\.com|twitter\.com)', text, re.I):
+        await handle_twitter_link(update, context, text, chat_id)
+        return
+    if 'tiktok.com' in text:
+        await handle_tiktok_link(update, context, text, chat_id, msg.message_id)
+        return
+
+    # الرد بالذكاء الاصطناعي بالكروب إذا تم تفعيله
     if settings.get("ai_mode", False) and not text.startswith(('رفع', 'تنزيل', 'طرد', 'حظر', 'كتم', 'قفل', 'فتح')):
         await context.bot.send_chat_action(chat_id, 'typing')
         reply = await ask_deepseek(text)
         return await msg.reply_text(reply)
 
-    # ── 4. التحميل من الروابط ──
-    if re.search(r'(youtube\.com|youtu\.be)', text, re.I):
-        url = re.search(r'https?://[^\s]+', text).group()
-        wait_msg = await msg.reply_text("🔍 جاري جلب المعلومات...")
-        try:
-            with YoutubeDL({'quiet': True, 'noplaylist': True, 'nocheckcertificate': True}) as ydl:
-                info = ydl.extract_info(url, download=False)
-            url_hash = str(random.randint(1000, 9999))
-            context.bot_data[url_hash] = url
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🎬 تحميل فيديو", callback_data=f"dl_opts_{user_id}_{url_hash}")], [InlineKeyboardButton("🎵 تحميل صوت", callback_data=f"dl_audio_{user_id}_{url_hash}")]])
-            if info.get('thumbnail'): await msg.reply_photo(info['thumbnail'], caption=info.get('title', 'اختر الصيغة:'), reply_markup=keyboard)
-            else: await msg.reply_text(info.get('title', 'اختر الصيغة:'), reply_markup=keyboard)
-            await wait_msg.delete()
-        except Exception as e: await wait_msg.edit_text("❌ فشل جلب بيانات الرابط.")
-        return
-
-    if re.search(r'(x\.com|twitter\.com)', text, re.I):
-        url = re.search(r'https?://[^\s]+', text).group()
-        wait_msg = await msg.reply_text("⏳ جاري تحميل المقطع من تويتر...")
-        filepath, title, tmp_dir = await download_media(url, "video", "best", msg.message_id, chat_id, context, wait_msg.message_id)
-        if filepath and os.path.exists(filepath):
-            await wait_msg.edit_text("📤 جاري الرفع...")
-            with open(filepath, 'rb') as f: await context.bot.send_video(chat_id, f, caption="✅ تم التحميل من X")
-            await wait_msg.delete()
-        else: await wait_msg.edit_text("❌ فشل التحميل من تويتر.")
-        if tmp_dir: shutil.rmtree(tmp_dir, ignore_errors=True)
-        return
-
-    if 'tiktok.com' in text:
-        url = re.search(r'https?://[^\s]+', text).group()
-        wait_msg = await msg.reply_text("⏳ جاري تحميل التيك توك...")
-        data = download_tiktok(url)
-        if data:
-            caption = f"👤 <b>الحساب:</b> @{data['author']}"
-            try:
-                if data['type'] == 'images':
-                    media = [InputMediaPhoto(img) for img in data['data']]
-                    await context.bot.send_media_group(chat_id, media, reply_to_message_id=msg.message_id)
-                    if data.get('music'): await context.bot.send_audio(chat_id, data['music'], caption=caption, parse_mode="HTML")
-                else: await context.bot.send_video(chat_id, data['data'], caption=caption, parse_mode="HTML", reply_to_message_id=msg.message_id)
-                await wait_msg.delete()
-            except Exception as e: await wait_msg.edit_text("❌ حدث خطأ أثناء الإرسال.")
-        else: await wait_msg.edit_text("❌ فشل التحميل من تيك توك.")
-        return
-
 # ═══════════════════════════════════════════════════════════════════
-# 8. تشغيل البوت
+# 9. تشغيل البوت
 # ═══════════════════════════════════════════════════════════════════
 def main():
     token = os.environ.get("BOT_TOKEN", "8159446452:AAHvUE5aEvuTmGfwAYAV7EqfshKD9Nv-B5o")
