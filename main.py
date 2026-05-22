@@ -679,6 +679,33 @@ async def welcome_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(e)
 
+# ═════════════════════════════════════════════════════
+# Message Tracking & Edit Notify (الدوال المفقودة)
+# ═════════════════════════════════════════════════════
+async def track_messages_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text or update.message.text.startswith('/'): 
+        return
+    db_set(f"messages/{update.message.chat.id}/{update.message.message_id}", {"text": update.message.text})
+
+async def edited_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.edited_message: 
+        return
+    
+    chat_id = update.edited_message.chat.id
+    msg_id = update.edited_message.message_id
+    
+    settings = get_settings(chat_id)
+    if not settings.get("edit_notify", True): 
+        return
+        
+    new_text = update.edited_message.text or "[ميديا/ملف]"
+    old_text = db_get(f"messages/{chat_id}/{msg_id}/text", "[غير متوفر]")
+    
+    db_set(f"messages/{chat_id}/{msg_id}", {"text": new_text})
+    
+    t = f"✏️ <b>إشعار تعديل</b>\n👤 <b>من:</b> {update.edited_message.from_user.first_name}\n❌ <b>قديم:</b> <code>{old_text}</code>\n✅ <b>جديد:</b> <code>{new_text}</code>"
+    await context.bot.send_message(chat_id, t, parse_mode="HTML")
+
 # ═══════════════════════════════════════════════════════════════════
 # 9. تشغيل البوت
 # ═══════════════════════════════════════════════════════════════════
