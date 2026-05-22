@@ -3,3 +3,4 @@ firebase-admin
 requests
 yt-dlp
 ffmpeg
+imageio-ffmpeg
