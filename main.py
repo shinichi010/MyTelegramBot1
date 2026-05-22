@@ -682,6 +682,7 @@ async def welcome_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 # 9. تشغيل البوت
 # ═══════════════════════════════════════════════════════════════════
+
 def main():
     token = os.environ.get(
         "BOT_TOKEN",
@@ -731,15 +732,7 @@ def main():
         group=2
     )
 
-app.add_handler(
-    MessageHandler(
-        filters.StatusUpdate.NEW_CHAT_MEMBERS,
-        welcome_member
-    )
-)
-
     print("✅ Bot Started")
-
     app.run_polling()
 
 if __name__ == "__main__":
