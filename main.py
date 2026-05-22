@@ -24,17 +24,17 @@ logger = logging.getLogger(__name__)
 # 1. مصفوفات التسلية والقوائم
 # ═══════════════════════════════════════════════════════════════════
 WA3ED_LIST = [
-    "هلا شتريد ؟",
-    "عيونها البيض والسود ",
-    "مشغولة حاليا فوخر عني ",
-    "هلا يا قلبي ",
-    "انا نايمة 😴"
+    "وعد: تعزم أول شخص يرد عليك على شاورما 🌯",
+    "وعد: تخلي صورتك بالبروفايل صورة طفل لمدة يوم 👶",
+    "وعد: تكتب بالكروب 'أنا أحبكم كلكم' وتثبتها دقيقة ❤️",
+    "وعد: تدز بصمة صوتية تغني بيها للكروب 🎤",
+    "وعد: تعترف بأكثر موقف محرج صار وياك 🫣"
 ]
 
 KHAYROK_LIST = [
-    "لو خيروك: تصير كلب لو حمار؟ ⏳",
-    "لو خيروك: تاكل بيتزا طول عمرك لو بركر طول عمرك؟ 🍕🍔",
-    "لو خيروك: تصير غني بس بدون أصدقاء لو فقير وعندك أصدقاء يحبوك؟ 💰",
+    "لو خيروك: تسافر عبر الزمن للمستقبل لو للماضي؟ ⏳",
+    "لو خيروك: تاكل بيتزا طول عمرك لو بركر طول عمرك? 🍕🍔",
+    "لو خيروك: تصير غني بس بدون أصدقاء، لو فقير وعندك أصدقاء يحبوك؟ 💰",
     "لو خيروك: تكدر تقرأ أفكار الناس لو تكدر تطير؟ 🦅"
 ]
 
@@ -392,17 +392,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔒 اضغط هنا واكتب الهمسة", url=f"t.me/{context.bot.username}?start=w_{user_id}_{target.id}_{str(chat_id).replace('-','m')}")]])
         return await msg.reply_text(f"يا {msg.from_user.first_name}، اضغط جوا واكتب همستك بالخاص 🤫", reply_markup=markup)
 
+    # 📌 أمر التحويل المطور لكشف الأخطاء الحقيقية
     if text == "تحويل" and msg.reply_to_message and msg.reply_to_message.video:
-        wait = await msg.reply_text("🔄 جاري استخراج الصوت...")
+        wait = await msg.reply_text("🔄 جاري استخراج الصوت وكشف العلة...")
         try:
             file = await msg.reply_to_message.video.get_file()
-            in_p, out_p = f"tmp_v_{msg.message_id}.mp4", f"tmp_a_{msg.message_id}.mp3"
-            await file.download_to_drive(in_p)
-            subprocess.run(["ffmpeg", "-i", in_p, "-q:a", "0", "-map", "a", out_p, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            with open(out_p, 'rb') as audio: await msg.reply_audio(audio)
-            os.remove(in_p); os.remove(out_p)
-            await wait.delete()
-        except: await wait.edit_text("❌ فشل التحويل. تأكد أن البوت يمتلك صلاحيات أو ffmpeg منصب بالسيرفر.")
+            in_p = f"tmp_v_{msg.message_id}.mp4"
+            out_p = f"tmp_a_{msg.message_id}.mp3"
+            
+            # تحميل الفيديو للسيرفر
+            await file.download_to_drive(custom_path=in_p)
+            
+            # تشغيل ffmpeg والتقاط الخطأ إذا وجد
+            result = subprocess.run(
+                ["ffmpeg", "-i", in_p, "-q:a", "0", "-map", "a", out_p, "-y"],
+                capture_output=True, text=True
+            )
+            
+            if os.path.exists(out_p):
+                with open(out_p, 'rb') as audio: 
+                    await msg.reply_audio(audio)
+                await wait.delete()
+            else:
+                # إذا لم ينشأ ملف الصوت، نمرر الخطأ الناتج من السيرفر
+                error_msg = result.stderr if result.stderr else "ffmpeg لم يقم بإنشاء ملف الخرج لأسباب مجهولة."
+                raise Exception(error_msg)
+                
+            if os.path.exists(in_p): os.remove(in_p)
+            if os.path.exists(out_p): os.remove(out_p)
+            
+        except Exception as e:
+            logger.error(f"Conversion error: {e}")
+            # هنا البوت راح يطبع الخطأ الحقيقي اللي صار بالنظام
+            await wait.edit_text(f"❌ <b>فشل التحويل!</b>\n\n<b>الخطأ التقني المكتشف:</b>\n<code>{str(e)[:300]}</code>", parse_mode="HTML")
         return
 
     # ── 2. الأوامر الإدارية المهمة ──
