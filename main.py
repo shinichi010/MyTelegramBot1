@@ -15,6 +15,7 @@ from telegram.ext import (
     filters, ContextTypes,
 )
 from yt_dlp import YoutubeDL
+import imageio_ffmpeg
 
 # إعداد التسجيل
 logging.basicConfig(level=logging.INFO)
@@ -181,6 +182,7 @@ async def download_media(url, media_type, quality, msg_id, chat_id, context, sta
         'nocheckcertificate': True,
         'geo_bypass': True,
         'extractor_retries': 3,
+        'ffmpeg_location': imageio_ffmpeg.get_ffmpeg_exe(),  # استخدام مسار الـ ffmpeg المدمج لليوتيوب
         'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'}
     }
 
@@ -392,10 +394,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔒 اضغط هنا واكتب الهمسة", url=f"t.me/{context.bot.username}?start=w_{user_id}_{target.id}_{str(chat_id).replace('-','m')}")]])
         return await msg.reply_text(f"يا {msg.from_user.first_name}، اضغط جوا واكتب همستك بالخاص 🤫", reply_markup=markup)
 
-    # 📌 أمر التحويل المطور لكشف الأخطاء الحقيقية
+    # 📌 أمر التحويل المطور المعتمد على الأدوات المدمجة لـ imageio-ffmpeg
     if text == "تحويل" and msg.reply_to_message and msg.reply_to_message.video:
-        wait = await msg.reply_text("🔄 جاري استخراج الصوت وكشف العلة...")
+        wait = await msg.reply_text("🔄 جاري استخراج الصوت...")
         try:
+            # جلب مسار ffmpeg المدمج تلقائياً دون الحاجة للنظام
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+            
             file = await msg.reply_to_message.video.get_file()
             in_p = f"tmp_v_{msg.message_id}.mp4"
             out_p = f"tmp_a_{msg.message_id}.mp3"
@@ -403,9 +408,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # تحميل الفيديو للسيرفر
             await file.download_to_drive(custom_path=in_p)
             
-            # تشغيل ffmpeg والتقاط الخطأ إذا وجد
+            # تشغيل ffmpeg المدمج والتقاط الخطأ إذا وجد
             result = subprocess.run(
-                ["ffmpeg", "-i", in_p, "-q:a", "0", "-map", "a", out_p, "-y"],
+                [ffmpeg_exe, "-i", in_p, "-q:a", "0", "-map", "a", out_p, "-y"],
                 capture_output=True, text=True
             )
             
@@ -414,7 +419,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await msg.reply_audio(audio)
                 await wait.delete()
             else:
-                # إذا لم ينشأ ملف الصوت، نمرر الخطأ الناتج من السيرفر
                 error_msg = result.stderr if result.stderr else "ffmpeg لم يقم بإنشاء ملف الخرج لأسباب مجهولة."
                 raise Exception(error_msg)
                 
@@ -423,7 +427,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         except Exception as e:
             logger.error(f"Conversion error: {e}")
-            # هنا البوت راح يطبع الخطأ الحقيقي اللي صار بالنظام
             await wait.edit_text(f"❌ <b>فشل التحويل!</b>\n\n<b>الخطأ التقني المكتشف:</b>\n<code>{str(e)[:300]}</code>", parse_mode="HTML")
         return
 
