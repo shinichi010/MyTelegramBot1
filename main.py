@@ -23,11 +23,11 @@ logger = logging.getLogger(__name__)
 #  مصفوفات التسلية (وعد، لو خيروك)
 # ═══════════════════════════════════════════════
 wa3ed_list = [
-    "وعد: تعزم أول شخص يرد عليك على شاورما 🌯",
-    "وعد: تخلي صورتك بالبروفايل صورة طفل لمدة يوم 👶",
-    "وعد: تكتب بالكروب 'أنا أحبكم كلكم' وتثبتها دقيقة ❤️",
-    "وعد: تدز بصمة صوتية تغني بيها للكروب 🎤",
-    "وعد: تعترف بأكثر موقف محرج صار وياك 🫣"
+    "اشرب جايك لا يبرد حبيبي ",
+    "مالي خلكك ",
+    "شتريد يا حياتي ؟ ❤️",
+    "نعم يا احلا صوت بالقروب  🎤",
+    "عيونها السود والبيض "
 ]
 
 khayrok_list = [
@@ -137,7 +137,6 @@ async def download_media_ytdlp(url, media_type, quality, msg_id, chat_id, contex
         'outtmpl': os.path.join(tmp, '%(title)s.%(ext)s'),
         'quiet': True, 'noplaylist': True,
         'progress_hooks': [lambda d: my_yt_hook(d, msg_id)],
-        # إضافات لتخطي حظر يوتيوب وتويتر
         'nocheckcertificate': True,
         'geo_bypass': True,
         'extractor_retries': 3
@@ -150,7 +149,7 @@ async def download_media_ytdlp(url, media_type, quality, msg_id, chat_id, contex
         if quality == "1080": ydl_opts['format'] = 'bestvideo[height<=1080]+bestaudio/best'
         elif quality == "720": ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best'
         elif quality == "360": ydl_opts['format'] = 'bestvideo[height<=360]+bestaudio/best'
-        else: ydl_opts['format'] = 'best' # لتويتر أفضل جودة دائماً
+        else: ydl_opts['format'] = 'best'
         ydl_opts['merge_output_format'] = 'mp4'
 
     active_downloads[msg_id] = "0%"
@@ -179,21 +178,6 @@ async def download_media_ytdlp(url, media_type, quality, msg_id, chat_id, contex
 # ═══════════════════════════════════════════════
 #  أوامر التسلية والإضافات القديمة
 # ═══════════════════════════════════════════════
-wa3ed_list = [
-    "وعد: تعزم أول شخص يرد عليك على شاورما 🌯",
-    "وعد: تخلي صورتك بالبروفايل صورة طفل لمدة يوم 👶",
-    "وعد: تكتب بالكروب 'أنا أحبكم كلكم' وتثبتها دقيقة ❤️",
-    "وعد: تدز بصمة صوتية تغني بيها للكروب 🎤",
-    "وعد: تعترف بأكثر موقف محرج صار وياك 🫣"
-]
-
-khayrok_list = [
-    "لو خيروك: تسافر عبر الزمن للمستقبل لو للماضي؟ ⏳",
-    "لو خيروك: تاكل بيتزا طول عمرك لو بركر طول عمرك؟ 🍕🍔",
-    "لو خيروك: تصير غني بس بدون أصدقاء، لو فقير وعندك أصدقاء يحبوك؟ 💰",
-    "لو خيروك: تكدر تقرأ أفكار الناس لو تكدر تطير؟ 🦅"
-]
-
 async def fun_commands_handler(update, context, text, msg):
     # نسبة الحب
     if text == "نسبة الحب" and msg.reply_to_message:
@@ -222,6 +206,7 @@ async def fun_commands_handler(update, context, text, msg):
         return await msg.reply_text(f"🆔 ايدي العضو: `{target.id}`", parse_mode="Markdown")
 
     return False
+
 # ═══════════════════════════════════════════════
 #  الهاندلرات
 # ═══════════════════════════════════════════════
@@ -268,35 +253,38 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     text = (msg.text or "").strip()
     
-    # أضف هذا السطر هنا:
-    fun_res = await fun_commands_handler(update, context, text, msg)
-    if fun_res: return # إذا تحقق أمر من أوامر التسلية، البوت يوقف هنا وما يكمل باقي الأوامر
+    # تعريف المتغيرات الأساسية المفقودة
+    chat_id = msg.chat_id
+    user_id = msg.from_user.id
+    s = get_settings(chat_id)
+    is_owner = await is_tg_owner(update, context)  # أو يمكن استخدام is_privileged حسب الحاجة
     
-    # ... باقي الكود مالتك (الذكاء الاصطناعي، التحميل، الخ) ...
-
+    # معالجة أوامر التسلية أولاً
+    fun_res = await fun_commands_handler(update, context, text, msg)
+    if fun_res: return  # إذا تم تنفيذ أمر تسلية، نوقف التنفيذ
+    
     # وضع الذكاء الاصطناعي
     if s.get("ai_mode", False) and text and not text.startswith(('رفع', 'تنزيل', 'طرد', 'حظر', 'كتم', 'ايقاف سيك', 'تشغيل سيك')):
         await context.bot.send_chat_action(chat_id, 'typing')
         reply = await ask_deepseek(text)
         return await msg.reply_text(reply)
 
-    if text == "تشغيل سيك" and priv_owner:
-        s["ai_mode"] = True; save_settings(chat_id, s)
+    # تشغيل وإيقاف الذكاء الاصطناعي (للمالك فقط)
+    if text == "تشغيل سيك" and is_owner:
+        s["ai_mode"] = True
+        save_settings(chat_id, s)
         return await msg.reply_text("🤖 تم تفعيل الذكاء الاصطناعي!")
-    if text == "ايقاف سيك" and priv_owner:
-        s["ai_mode"] = False; save_settings(chat_id, s)
+    if text == "ايقاف سيك" and is_owner:
+        s["ai_mode"] = False
+        save_settings(chat_id, s)
         return await msg.reply_text("😴 تم إيقاف الذكاء الاصطناعي.")
-
-    # ألعاب التسلية
-    if text == "وعد": return await msg.reply_text(random.choice(wa3ed_list))
-    if text == "لو خيروك": return await msg.reply_text(random.choice(khayrok_list))
 
     # ── يوتيوب ──
     if re.search(r'youtube\.com|youtu\.be', text, re.I):
         url = re.search(r'https?://[^\s]+', text).group()
         wait = await msg.reply_text("🔍 جاري جلب المعلومات من يوتيوب...")
         try:
-            with YoutubeDL({'quiet': True, 'noplaylist': True, 'nocheckcertificate': True}) as ydl: 
+            with YoutubeDL({'quiet': True, 'noplaylist': True, 'nocheckcertificate': True}) as ydl:
                 info = ydl.extract_info(url, download=False)
             url_hash = str(random.randint(1000, 9999))
             context.bot_data[url_hash] = url
@@ -304,10 +292,13 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🎬 تحميل فيديو", callback_data=f"dl_opts_{user_id}_{url_hash}")],
                 [InlineKeyboardButton("🎵 تحميل صوت", callback_data=f"dl_audio_{user_id}_{url_hash}")]
             ])
-            if info.get('thumbnail'): await msg.reply_photo(info['thumbnail'], caption=info.get('title', 'اختر الصيغة:'), reply_markup=k)
-            else: await msg.reply_text(info.get('title', 'اختر الصيغة:'), reply_markup=k)
+            if info.get('thumbnail'):
+                await msg.reply_photo(info['thumbnail'], caption=info.get('title', 'اختر الصيغة:'), reply_markup=k)
+            else:
+                await msg.reply_text(info.get('title', 'اختر الصيغة:'), reply_markup=k)
             await wait.delete()
-        except: await wait.edit_text("❌ لم أتمكن من جلب بيانات هذا الرابط، قد يكون محمي أو البوت محظور مؤقتاً.")
+        except Exception as e:
+            await wait.edit_text("❌ لم أتمكن من جلب بيانات هذا الرابط، قد يكون محمي أو البوت محظور مؤقتاً.")
         return
 
     # ── تويتر (X) ──
@@ -317,10 +308,12 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filepath, title = await download_media_ytdlp(url, "video", "best", msg.message_id, chat_id, context, wait.message_id)
         if filepath and os.path.exists(filepath):
             await wait.edit_text("📤 جاري الرفع للتيليجرام...")
-            with open(filepath, 'rb') as file: await context.bot.send_video(chat_id, file, caption="✅ تم التحميل من منصة X")
+            with open(filepath, 'rb') as file:
+                await context.bot.send_video(chat_id, file, caption="✅ تم التحميل من منصة X")
             os.remove(filepath)
             await wait.delete()
-        else: await wait.edit_text("❌ فشل التحميل من تويتر.")
+        else:
+            await wait.edit_text("❌ فشل التحميل من تويتر.")
         return
 
     # ── تيك توك ──
@@ -334,14 +327,15 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if res['type'] == 'images':
                     media = [InputMediaPhoto(img) for img in res['data']]
                     await context.bot.send_media_group(chat_id, media, reply_to_message_id=msg.message_id)
-                    # إرسال الصوت المنفصل مع المنشن
                     if res.get('music'):
                         await context.bot.send_audio(chat_id, res['music'], caption=caption, parse_mode="HTML")
-                else: 
+                else:
                     await context.bot.send_video(chat_id, res['data'], caption=caption, parse_mode="HTML", reply_to_message_id=msg.message_id)
                 await wait.delete()
-            except Exception as e: await wait.edit_text("❌ حدث خطأ بالإرسال.")
-        else: await wait.edit_text("❌ فشل التحميل.")
+            except Exception as e:
+                await wait.edit_text("❌ حدث خطأ بالإرسال.")
+        else:
+            await wait.edit_text("❌ فشل التحميل.")
         return
 
 def main():
@@ -351,4 +345,5 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
     app.run_polling()
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    main()
