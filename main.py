@@ -98,7 +98,7 @@ def db_set(path, data):
     except Exception as e: logger.error(f"DB set error: {e}")
 
 def get_settings(chat_id):
-    return db_get(f"settings/{str(chat_id)}", {"welcome": True, "banned_words": [], "locked": False, "links_protection": False, "edit_notify": True, "ai_mode": False})
+    return db_get(f"settings/{str(chat_id)}", {"welcome": True, "banned_words": [], "locked": False, "links_protection": False, "edit_notify": True, "ai_mode": False, "block_photos": False, "block_videos": False, "block_stickers": False, "block_gifs": False, "block_audio": False})
 
 def save_settings(chat_id, settings):
     db_set(f"settings/{str(chat_id)}", settings)
@@ -587,3 +587,19 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ===== V2 Partial Upgrade =====
+def get_replies(chat_id):
+    return db_get(f"replies/{chat_id}", {})
+
+def save_reply(chat_id, trigger, response):
+    replies = get_replies(chat_id)
+    replies[trigger] = response
+    db_set(f"replies/{chat_id}", replies)
+
+def delete_reply(chat_id, trigger):
+    replies = get_replies(chat_id)
+    if trigger in replies:
+        del replies[trigger]
+    db_set(f"replies/{chat_id}", replies)
