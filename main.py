@@ -70,7 +70,9 @@ TEXT_DL = (
     "🎵 تيك توك + 🇨🇳 دوين — فيديو وصور\n"
     "📘 فيس بوك — مقاطع ريلز\n"
     "📸 انستغرام — فيديو وصور وريلز\n"
-    "• <code>ستوري @username</code> — ستوريات انستغرام\n\n"
+    "📌 بينترست — فيديو وصور\n\n"
+    "🎵 <b>معلومات تيك توك:</b>\n"
+    "• <code>تيك @username</code>\n\n"
     "💡 أرسل الرابط مباشرة!"
 )
 
@@ -169,7 +171,7 @@ async def get_target(upd, ctx):
 # 4. الذكاء الاصطناعي
 # ═══════════════════════════════════════════════════════════════════
 async def ask_ai(prompt: str) -> str:
-    api_key = os.environ.get("DEEPSEEK_KEY", "sk-b6d1e425ff744665af155900d6283c96")
+    api_key = os.environ.get("DEEPSEEK_KEY", "sk-f5149facf1164e6db0af5fd276c8fbfe")
     def _call():
         try:
             r = requests.post("https://api.deepseek.com/chat/completions",
@@ -407,10 +409,24 @@ async def tiktok_handler(upd, ctx, url, cid, reply_id):
         cap = f"👤 <b>@{data['author']}</b>"
         try:
             if data['type'] == 'images':
-                media = [InputMediaPhoto(img) for img in data['data'][:10]]
-                await ctx.bot.send_media_group(cid, media, reply_to_message_id=reply_id)
-                if data.get('music'):
-                    await ctx.bot.send_audio(cid, data['music'], caption=cap, parse_mode="HTML")
+                # تحميل الصور أولاً لأن روابطها تحتاج headers
+                def _dl_imgs():
+                    result = []
+                    headers = {'User-Agent':'Mozilla/5.0','Referer':'https://www.tiktok.com/'}
+                    for img_url in data['data'][:10]:
+                        try:
+                            r = requests.get(img_url, headers=headers, timeout=15)
+                            if r.status_code == 200: result.append(r.content)
+                        except: pass
+                    return result
+                img_bytes = await asyncio.get_running_loop().run_in_executor(None, _dl_imgs)
+                if img_bytes:
+                    media = [InputMediaPhoto(b) for b in img_bytes]
+                    await ctx.bot.send_media_group(cid, media, reply_to_message_id=reply_id)
+                    if data.get('music'):
+                        await ctx.bot.send_audio(cid, data['music'], caption=cap, parse_mode="HTML")
+                else:
+                    return await wm.edit_text("❌ تعذر تحميل الصور من هذه الألبوم.")
             else:
                 await ctx.bot.send_video(cid, data['data'], caption=cap, parse_mode="HTML",
                                          reply_to_message_id=reply_id, supports_streaming=True)
@@ -544,6 +560,93 @@ def ttt_bot(b):
 # ═══════════════════════════════════════════════════════════════════
 # 8. /start
 # ═══════════════════════════════════════════════════════════════════
+
+async def pinterest_handler(upd, ctx, url, cid):
+    """تحميل من بينترست (صور وفيديو)"""
+    msg = upd.message
+    wm = await msg.reply_text("📌 جاري التحميل من بينترست...")
+    tmp = tempfile.mkdtemp()
+    opts = {**_base_opts(msg.message_id), 'outtmpl': os.path.join(tmp,'%(id)s.%(ext)s'),
+            'format':'best[ext=mp4]/best[ext=jpg]/best'}
+    def _dl():
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            files = [os.path.join(tmp,f) for f in os.listdir(tmp) if os.path.isfile(os.path.join(tmp,f))]
+            return files, info.get('title','بينترست'), info.get('thumbnail')
+    try:
+        files, title, thumb = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        if not files and thumb:
+            r = requests.get(thumb, timeout=15)
+            if r.status_code == 200:
+                await ctx.bot.send_photo(cid, r.content, caption=f"📌 {title[:60]}")
+                return await wm.delete()
+        if not files: return await wm.edit_text("❌ ما لقيت محتوى للتحميل من هذا الرابط.")
+        await wm.edit_text("📤 جاري الرفع...")
+        videos = [f for f in files if f.endswith(('.mp4','.webm'))]
+        images = [f for f in files if f.endswith(('.jpg','.png','.jpeg','.webp'))]
+        for v in videos[:2]:
+            with open(v,'rb') as f: await ctx.bot.send_video(cid, f, caption=f"📌 {title[:60]}", supports_streaming=True)
+        if images:
+            handles=[]; media=[]
+            for img in images[:10]:
+                fh=open(img,'rb'); handles.append(fh); media.append(InputMediaPhoto(fh))
+            try: await ctx.bot.send_media_group(cid, media)
+            finally:
+                for fh in handles: fh.close()
+        await wm.delete()
+    except Exception as e:
+        logger.error(f"[Pinterest] {e}")
+        await wm.edit_text(f"❌ فشل التحميل من بينترست.\n{str(e)[:100]}")
+    finally: shutil.rmtree(tmp, ignore_errors=True)
+
+
+async def tiktok_user_info(upd, ctx, username, cid):
+    """معلومات حساب تيك توك"""
+    msg = upd.message
+    username = username.lstrip('@').strip()
+    if not username: return await msg.reply_text("❗ مثال: <code>تيك codexpert</code>", parse_mode="HTML")
+    wm = await msg.reply_text(f"🔍 جاري جلب معلومات @{username}...")
+    def _fetch():
+        r = requests.get("https://www.tikwm.com/api/user/info",
+            params={"unique_id": username, "count": 1},
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        return r.json()
+    try:
+        data = await asyncio.get_running_loop().run_in_executor(None, _fetch)
+        if data.get('code') == 0 and data.get('data'):
+            u = data['data'].get('user', data['data'])
+            name = u.get('nickname') or u.get('name', username)
+            uid_str = u.get('id', '—')
+            followers = u.get('followerCount', 0)
+            following = u.get('followingCount', 0)
+            likes = u.get('heartCount', 0)
+            videos = u.get('videoCount', 0)
+            bio = u.get('signature','') or '—'
+            verified = "✅ موثق" if u.get('verified') else "❌ غير موثق"
+            private = "🔒 خاص" if u.get('privateAccount') else "🌐 عام"
+            avatar = u.get('avatarLarger') or u.get('avatarMedium') or u.get('avatarThumb','')
+            txt = (f"🎵 <b>معلومات تيك توك</b>\n\n"
+                   f"👤 <b>الاسم:</b> {name}\n"
+                   f"📛 <b>اليوزر:</b> @{username}\n"
+                   f"🆔 <b>ID:</b> <code>{uid_str}</code>\n"
+                   f"✅ <b>التوثيق:</b> {verified}\n"
+                   f"🔒 <b>الحساب:</b> {private}\n"
+                   f"👥 <b>المتابعون:</b> {followers:,}\n"
+                   f"➡️ <b>يتابع:</b> {following:,}\n"
+                   f"❤️ <b>الإعجابات:</b> {likes:,}\n"
+                   f"🎬 <b>الفيديوهات:</b> {videos:,}\n"
+                   f"📝 <b>البايو:</b> {bio[:150]}")
+            await wm.delete()
+            if avatar:
+                try: await ctx.bot.send_photo(cid, avatar, caption=txt, parse_mode="HTML"); return
+                except: pass
+            await msg.reply_text(txt, parse_mode="HTML")
+        else:
+            await wm.edit_text(f"❌ ما لقيت حساب @{username} على تيك توك.\nتأكد من صحة اليوزرنيم.")
+    except Exception as e:
+        logger.error(f"[TT info] {e}")
+        await wm.edit_text(f"❌ خطأ: {str(e)[:100]}")
+
 async def cmd_start(upd, ctx):
     msg = upd.message
     if msg.chat.type == 'private' and msg.text.startswith('/start w_'):
@@ -557,11 +660,26 @@ async def cmd_start(upd, ctx):
             await msg.reply_text("🔒 *أرسل همستك الآن:*\n_(سيتم إرسالها للكروب تلقائياً)_ 🤫", parse_mode="Markdown")
         except: await msg.reply_text("خطأ في رابط الهمسة.")
     else:
+        name = msg.from_user.first_name
         await msg.reply_text(
-            "أهلاً! 🎉 أنا بوت متكامل للإدارة والتحميل والتسلية!\n\n"
-            "📥 <b>أرسل رابط من:</b> يوتيوب • تيك توك • دوين • فيس بوك • X • انستغرام\n"
-            "💬 أو كلمني مباشرة وسأرد بالذكاء الاصطناعي\n\n"
-            "اكتب <code>الاوامر</code> في كروبك لقائمة الأوامر الكاملة",
+            f"أهلاً <b>{name}</b>! 👋\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "📥 <b>التحميل المدعوم:</b>\n"
+            "🎬 يوتيوب   🐦 تويتر/X\n"
+            "🎵 تيك توك  🇨🇳 دوين\n"
+            "📘 فيس بوك  📸 انستغرام\n"
+            "📌 بينترست\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🤖 <b>الذكاء الاصطناعي:</b>\n"
+            "اكتب <code>تشغيل سيك</code> لبدء المحادثة\n"
+            "اكتب <code>ايقاف سيك</code> لإيقافه\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🎵 <b>معلومات تيك توك:</b>\n"
+            "اكتب <code>تيك @username</code>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "👥 <b>للمجموعات:</b>\n"
+            "أضفني مشرفاً واكتب <code>الاوامر</code>\n\n"
+            "💡 فقط أرسل أي رابط وأنا أتكفله! 😎",
             parse_mode="HTML"
         )
 
@@ -770,6 +888,17 @@ async def btn_cb(upd, ctx):
 # ═══════════════════════════════════════════════════════════════════
 async def welcome_handler(upd, ctx):
     for m in upd.message.new_chat_members:
+        if m.id == ctx.bot.id:
+            await upd.message.reply_text(
+                "👋 <b>أهلاً! تم إضافتي للمجموعة!</b>\n\n"
+                "⚠️ <b>لكي أعمل بشكل كامل:</b>\n"
+                "1️⃣ اجعلني <b>مشرفاً</b> في المجموعة\n"
+                "2️⃣ افتح @BotFather وأوقف Privacy Mode:\n"
+                "   <code>mybots → اختر البوت → Bot Settings → Group Privacy → Disable</code>\n\n"
+                "اكتب <code>الاوامر</code> لقائمة الأوامر الكاملة 📋",
+                parse_mode="HTML"
+            )
+            continue
         if m.is_bot: continue
         s=get_settings(upd.message.chat.id)
         if not s.get("welcome",True): continue
@@ -838,18 +967,39 @@ async def handle_msg(upd, ctx):
                 reply_markup=markup,parse_mode="Markdown")
             await msg.reply_text("✅ أُرسلت الهمسة بنجاح! 🎉"); return
 
+        # تشغيل/ايقاف الذكاء الاصطناعي
+        if text == "تشغيل سيك":
+            ctx.user_data['ai'] = True
+            return await msg.reply_text("🤖 <b>تم تفعيل الذكاء الاصطناعي!</b>\nكلمني بأي شيء 😊\n\nاكتب <code>ايقاف سيك</code> لإيقافه.", parse_mode="HTML")
+        if text == "ايقاف سيك":
+            ctx.user_data['ai'] = False
+            return await msg.reply_text("😴 تم إيقاف الذكاء الاصطناعي.\nاكتب <code>تشغيل سيك</code> لتفعيله.", parse_mode="HTML")
+
+        # معلومات تيك توك
+        mt = re.match(r'^تيك\s+@?(\S+)', text, re.I)
+        if mt: await tiktok_user_info(upd, ctx, mt.group(1), cid); return
+
         # روابط بالخاص
         if re.search(r'(youtube\.com|youtu\.be|shorts)',text,re.I): await yt_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
         if re.search(r'(x\.com|twitter\.com)',text,re.I): await x_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
         if re.search(r'(tiktok\.com|vm\.tiktok\.com|douyin\.com)',text,re.I): await tiktok_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid,msg.message_id); return
         if re.search(r'(facebook\.com|fb\.watch|fb\.com)',text,re.I): await fb_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
+        if re.search(r'(pinterest\.com|pin\.it)',text,re.I): await pinterest_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid); return
         m=re.match(r'^ستوري\s+@?(\S+)',text,re.I)
         if m: await insta_stories_handler(upd,ctx,m.group(1),cid); return
         if re.search(r'instagram\.com',text,re.I): await insta_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid); return
 
         if not text.startswith('/'):
-            await ctx.bot.send_chat_action(cid,'typing')
-            await msg.reply_text(await ask_ai(text))
+            if ctx.user_data.get('ai', False):
+                await ctx.bot.send_chat_action(cid,'typing')
+                await msg.reply_text(await ask_ai(text))
+            else:
+                await msg.reply_text(
+                    "💡 اكتب <b>تشغيل سيك</b> لتفعيل الذكاء الاصطناعي 🤖\n"
+                    "أو أرسل رابط من يوتيوب، تيك توك، فيس بوك، X، انستغرام، بينترست للتحميل! 📥\n"
+                    "اكتب <code>تيك @username</code> لمعلومات حساب تيك توك 🎵",
+                    parse_mode="HTML"
+                )
         return
 
     # ══ كروب ══
@@ -1132,10 +1282,13 @@ async def handle_msg(upd, ctx):
         if text=="ايقاف سيك": s["ai_mode"]=False; save_settings(cid,s); return await msg.reply_text("😴 الذكاء الاصطناعي موقوف.")
 
     # روابط في الكروب
+    mt = re.match(r'^تيك\s+@?(\S+)', text, re.I)
+    if mt: await tiktok_user_info(upd, ctx, mt.group(1), cid); return
     if re.search(r'(youtube\.com|youtu\.be|shorts)',text,re.I): await yt_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
     if re.search(r'(x\.com|twitter\.com)',text,re.I): await x_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
     if re.search(r'(tiktok\.com|vm\.tiktok\.com|douyin\.com)',text,re.I): await tiktok_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid,msg.message_id); return
     if re.search(r'(facebook\.com|fb\.watch|fb\.com)',text,re.I): await fb_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
+    if re.search(r'(pinterest\.com|pin\.it)',text,re.I): await pinterest_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid); return
     m=re.match(r'^ستوري\s+@?(\S+)',text,re.I)
     if m: await insta_stories_handler(upd,ctx,m.group(1),cid); return
     if re.search(r'instagram\.com',text,re.I): await insta_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid); return
