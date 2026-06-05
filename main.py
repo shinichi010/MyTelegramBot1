@@ -1,1657 +1,1169 @@
-import logging
-import os
-import asyncio
-import random
-import re
-import requests
-import tempfile
-import shutil
-import subprocess
-import firebase_admin
-from firebase_admin import credentials, db
+import logging, os, asyncio, random, re, hashlib, requests
+import tempfile, shutil, subprocess, sqlite3, json, threading, math
 from telegram import Update, ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
-from telegram.ext import (
-    Application, MessageHandler, CallbackQueryHandler, CommandHandler,
-    filters, ContextTypes,
-)
+from telegram.ext import Application, MessageHandler, CallbackQueryHandler, CommandHandler, filters, ContextTypes
 from yt_dlp import YoutubeDL
 import imageio_ffmpeg
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════
-# 1. القوائم والمحتوى الثابت
+# 1. القوائم والمحتوى
 # ═══════════════════════════════════════════════════════════════════
 WA3ED_LIST = [
-    "وعد: تعزم أول شخص يرد عليك على شاورما 🌯",
-    "وعد: تخلي صورتك بالبروفايل صورة طفل لمدة يوم 👶",
-    "وعد: تكتب بالكروب 'أنا أحبكم كلكم' وتثبتها دقيقة ❤️",
-    "وعد: تدز بصمة صوتية تغني بيها للكروب 🎤",
-    "وعد: تعترف بأكثر موقف محرج صار وياك 🫣",
-    "وعد: تغير اسمك للكروب على اسم شخص تختاره لمدة ساعة 😂",
+    "عيونها السود والبيض 👀",
+    " هلا بالحلو\ة 🌸",
+    "مالي خلقك 😏",
+    "اتسرسح منا وليدي 😤",
+    "وعد هسه مشغولة 😅",
 ]
-
 KHAYROK_LIST = [
-    "لو خيروك: تسافر عبر الزمن للمستقبل لو للماضي؟ ⏳",
-    "لو خيروك: تاكل بيتزا طول عمرك لو بركر طول عمرك؟ 🍕🍔",
-    "لو خيروك: تصير غني بس بدون أصدقاء، لو فقير وعندك أصدقاء يحبوك؟ 💰",
-    "لو خيروك: تكدر تقرأ أفكار الناس لو تكدر تطير؟ 🦅",
-    "لو خيروك: ما تنام أبد لو ما تأكل أبد؟ 😴🍽️",
-    "لو خيروك: تعرف تاريخ وفاتك لو مو تعرف؟ 💀",
+    "لو خيروك: تسافر للمستقبل لو للماضي؟ ⏳",
+    "لو خيروك: تاكل بيتزا طول عمرك لو بركر؟ 🍕🍔",
+    "لو خيروك: غني بلا أصدقاء، لو فقير وعندك أحباء؟ 💰",
+    "لو خيروك: تقرأ أفكار الناس لو تطير؟ 🦅",
+    "لو خيروك: ما تنام أبد لو ما تأكل أبد؟ 😴",
 ]
-
 JOKES_LIST = [
     "شلون النملة تعدّ حياتها؟ — تحسب سنين! 🐜😂",
     "شو يقول الصفر للرقم 8؟ — حزامك ظاهر! 😄",
     "ليش الكمبيوتر بارد؟ — لأن عنده ويندوز! 🪟",
     "شو تقول السمكة لما اصطدمت بالحائط؟ — دام! 🐟",
-    "ليش العلماء لا يثقون بالذرة؟ — لأنها تشكّل كلشي! ⚛️",
 ]
-
-LANG_TO_FLAG = {
-    'ar': '🇸🇦 عربي', 'en': '🇬🇧 انجليزي', 'tr': '🇹🇷 تركي',
-    'fa': '🇮🇷 فارسي', 'ru': '🇷🇺 روسي', 'fr': '🇫🇷 فرنسي',
-    'de': '🇩🇪 ألماني', 'es': '🇪🇸 اسباني', 'it': '🇮🇹 ايطالي',
-    'hi': '🇮🇳 هندي', 'zh': '🇨🇳 صيني', 'ja': '🇯🇵 ياباني',
-    'ko': '🇰🇷 كوري', 'pt': '🇧🇷 برتغالي', 'nl': '🇳🇱 هولندي',
-    'pl': '🇵🇱 بولندي', 'uk': '🇺🇦 أوكراني', 'uz': '🇺🇿 أوزبكي',
-    'kk': '🇰🇿 كازاخي', 'ky': '🇰🇬 قرغيزي',
+LANG_FLAG = {
+    'ar':'🇸🇦','en':'🇬🇧','tr':'🇹🇷','fa':'🇮🇷','ru':'🇷🇺',
+    'fr':'🇫🇷','de':'🇩🇪','es':'🇪🇸','hi':'🇮🇳','zh':'🇨🇳',
+    'ja':'🇯🇵','ko':'🇰🇷','pt':'🇧🇷','it':'🇮🇹','uk':'🇺🇦',
 }
-
-TEXT_MAIN_MENU = "📋 <b>أهلاً بك في لوحة أوامر البوت المتكاملة</b>\n\nالرجاء اختيار القسم الذي تود تصفحه من الأزرار بالأسفل 👇"
-
-TEXT_ADMIN_CMDS = (
-    "👑 <b>أوامر المالك والمدراء:</b>\n"
+TEXT_MAIN = "📋 <b>لوحة أوامر البوت</b>\n\nاختر القسم 👇"
+TEXT_ADMIN = (
+    "👑 <b>أوامر الإدارة:</b>\n"
     "• <code>رفع مالك | مدير | مميز</code> / <code>تنزيل رتبة</code>\n"
-    "• <code>طرد | حظر | فك حظر</code>\n"
+    "• <code>طرد | حظر | فك حظر | كتم | الغاء كتم</code>\n"
     "• <code>تثبيت | الغاء تثبيت</code>\n"
-    "• <code>كتم | الغاء كتم</code>\n"
     "• <code>قفل الشات | فتح الشات</code>\n"
     "• <code>تحذير | الغاء تحذير | تحذيراتي</code>\n"
     "• <code>منع كلمة X | حذف كلمة X | الكلمات</code>\n"
     "• <code>منع ملصقات | منع قيف | منع مقاطع | منع صور</code>\n"
     "• <code>تفعيل ملصقات | تفعيل قيف | تفعيل مقاطع | تفعيل صور</code>\n"
-    "• <code>اضافة رد X | Y</code> — رد تلقائي عند كتابة X\n"
-    "• <code>حذف رد X</code> / <code>قائمة الردود</code>\n"
-    "• <code>الترحيب تشغيل | الترحيب ايقاف</code>\n"
-    "• <code>تعديل تشغيل | تعديل ايقاف</code>\n"
+    "• <code>اضافة رد X | Y</code> / <code>حذف رد X</code> / <code>قائمة الردود</code>\n"
+    "• <code>الترحيب تشغيل/ايقاف</code> / <code>تعديل تشغيل/ايقاف</code>\n"
     "• <code>تشغيل سيك | ايقاف سيك</code> — الذكاء الاصطناعي\n"
-    "• <code>مسح X</code> — حذف X رسالة (رد على الأولى)"
+    "• <code>مسح X</code> — حذف X رسالة"
 )
-
-TEXT_FUN_CMDS = (
-    "🎮 <b>أوامر التسلية والخدمات العامة:</b>\n"
+TEXT_FUN = (
+    "🎮 <b>أوامر التسلية:</b>\n"
     "• <code>همسة</code> — همسة سرية (بالرد)\n"
-    "• <code>ايدي</code> — معلومات المستخدم\n"
-    "• <code>افتار</code> — صورة البروفايل\n"
-    "• <code>زواج | طلاق | شريكي</code>\n"
-    "• <code>نسبة الحب</code> — بالرد على شخص\n"
-    "• <code>تحويل</code> — رد على مقطع لتحويله لصوت\n"
-    "• <code>لو خيروك | وعد | نكتة</code>\n"
-    "• <code>اكس او</code> — لعبة إكس أو 🎮"
+    "• <code>ايدي</code> / <code>افتار</code>\n"
+    "• <code>زواج | طلاق | شريكي | نسبة الحب</code>\n"
+    "• <code>تحويل</code> — رد على فيديو لتحويله لصوت\n"
+    "• <code>لو خيروك | وعد | نكتة | نرد | عملة</code>\n"
+    "• <code>اكس او</code> — لعبة إكس أو 🎮\n"
+    "• <code>ترجمة [نص]</code> — ترجمة أي نص للعربي\n"
+    "• <code>حساب [عملية]</code> — حاسبة رياضية"
+)
+TEXT_DL = (
+    "📥 <b>التحميل — المواقع المدعومة:</b>\n\n"
+    "🎬 يوتيوب — اختيار جودة حقيقية\n"
+    "🐦 تويتر/X — أزرار جودة\n"
+    "🎵 تيك توك + 🇨🇳 دوين — فيديو وصور\n"
+    "📘 فيس بوك — مقاطع ريلز\n"
+    "📸 انستغرام — فيديو وصور وريلز\n"
+    "• <code>ستوري @username</code> — ستوريات انستغرام\n\n"
+    "💡 أرسل الرابط مباشرة!"
 )
 
-TEXT_DOWNLOAD_CMDS = (
-    "📥 <b>قسم التحميل — المواقع المدعومة:</b>\n\n"
-    "🎬 <b>يوتيوب</b> — اختيار الجودة (144p → 4K) + صوت MP3\n"
-    "🐦 <b>تويتر/X</b> — اختيار الجودة\n"
-    "🎵 <b>تيك توك</b> — فيديو بدون علامة مائية + ألبوم صور\n"
-    "🇨🇳 <b>دوين (Douyin)</b> — تيك توك الصيني\n"
-    "📘 <b>فيس بوك</b> — تحميل مقاطع الفيس بوك\n"
-    "📸 <b>انستغرام</b> — فيديو وصور (ريلز، بوستات)\n\n"
-    "💡 فقط أرسل الرابط مباشرة!"
-)
-
-
-def get_main_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛡️ أوامر الإدارة", callback_data="cmd_admin"),
-         InlineKeyboardButton("🎮 التسلية", callback_data="cmd_fun")],
-        [InlineKeyboardButton("📥 قسم التحميل", callback_data="cmd_dl")]
-    ])
-
-
-def get_back_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 العودة للقائمة", callback_data="cmd_main")]])
-
+def mk_main(): return InlineKeyboardMarkup([[
+    InlineKeyboardButton("🛡️ الإدارة", callback_data="cmd_admin"),
+    InlineKeyboardButton("🎮 التسلية", callback_data="cmd_fun")],
+    [InlineKeyboardButton("📥 التحميل", callback_data="cmd_dl")]])
+def mk_back(): return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة", callback_data="cmd_main")]])
 
 # ═══════════════════════════════════════════════════════════════════
-# 2. قاعدة البيانات (Firebase)
+# 2. قاعدة البيانات SQLite (بديل Firebase — يشتغل على Railway)
 # ═══════════════════════════════════════════════════════════════════
-try:
-    cred = credentials.Certificate('firebase.json')
-    firebase_url = os.environ.get('DATABASE_URL', 'https://mytelegrambotdb-default-rtdb.europe-west1.firebasedatabase.app/')
-    firebase_admin.initialize_app(cred, {'DATABASE_URL': firebase_url})
-    logger.info("✅ Firebase connected")
-except Exception as e:
-    logger.error(f"❌ Firebase error: {e}")
+DB_PATH = os.environ.get('DB_PATH', 'bot_data.db')
+_db_lock = threading.Lock()
 
+def _init_db():
+    with sqlite3.connect(DB_PATH) as c:
+        c.execute('CREATE TABLE IF NOT EXISTS kv (path TEXT PRIMARY KEY, value TEXT)')
+        c.commit()
+_init_db()
 
-def db_get(path, default):
-    try:
-        val = db.reference(path).get()
-        return val if val is not None else default
-    except:
-        return default
+def db_get(path: str, default=None):
+    with _db_lock:
+        try:
+            with sqlite3.connect(DB_PATH) as c:
+                row = c.execute('SELECT value FROM kv WHERE path=?', (path,)).fetchone()
+                return json.loads(row[0]) if row else default
+        except: return default
 
+def db_set(path: str, value):
+    with _db_lock:
+        try:
+            with sqlite3.connect(DB_PATH) as c:
+                if value is None:
+                    c.execute('DELETE FROM kv WHERE path=?', (path,))
+                else:
+                    c.execute('INSERT OR REPLACE INTO kv (path,value) VALUES (?,?)',
+                              (path, json.dumps(value, ensure_ascii=False)))
+                c.commit()
+        except Exception as e: logger.error(f"DB error: {e}")
 
-def db_set(path, data):
-    try:
-        db.reference(path).set(data)
-    except Exception as e:
-        logger.error(f"DB set error: {e}")
-
-
-def get_settings(chat_id):
-    return db_get(f"settings/{str(chat_id)}", {
-        "welcome": True, "banned_words": [], "locked": False,
-        "edit_notify": True, "ai_mode": False,
-        "ban_stickers": False, "ban_gifs": False,
-        "ban_videos": False, "ban_photos": False
+def get_settings(cid):
+    return db_get(f"settings/{cid}", {
+        "welcome":True,"banned_words":[],"locked":False,
+        "edit_notify":True,"ai_mode":False,
+        "ban_stickers":False,"ban_gifs":False,"ban_videos":False,"ban_photos":False
     })
+def save_settings(cid, s): db_set(f"settings/{cid}", s)
 
+def make_key(text): return "k"+hashlib.md5(text.strip().lower().encode()).hexdigest()[:16]
 
-def save_settings(chat_id, settings):
-    db_set(f"settings/{str(chat_id)}", settings)
+def store_reply(cid, trigger, reply):
+    d = db_get(f"replies/{cid}", {})
+    d[make_key(trigger)] = {"t": trigger.strip(), "r": reply.strip()}
+    db_set(f"replies/{cid}", d)
 
+def delete_reply(cid, trigger):
+    d = db_get(f"replies/{cid}", {})
+    d.pop(make_key(trigger), None)
+    db_set(f"replies/{cid}", d)
+
+def get_replies(cid):
+    d = db_get(f"replies/{cid}", {})
+    return [(v["t"], v["r"]) for v in d.values() if isinstance(v, dict) and v.get("t") and v.get("r")]
 
 # ═══════════════════════════════════════════════════════════════════
 # 3. الصلاحيات
 # ═══════════════════════════════════════════════════════════════════
-ROLE_OWNER = "owner"
-ROLE_MANAGER = "manager"
-ROLE_VIP = "vip"
-ROLE_RANK = {ROLE_OWNER: 3, ROLE_MANAGER: 2, ROLE_VIP: 1}
-ROLE_LABEL = {ROLE_OWNER: "👑 مالك", ROLE_MANAGER: "🛡 مدير", ROLE_VIP: "⭐ مميز"}
+ROLE_OWNER, ROLE_MGR, ROLE_VIP = "owner","manager","vip"
+ROLE_RANK = {ROLE_OWNER:3, ROLE_MGR:2, ROLE_VIP:1}
+ROLE_LABEL = {ROLE_OWNER:"👑 مالك", ROLE_MGR:"🛡 مدير", ROLE_VIP:"⭐ مميز"}
 
+def get_role(cid, uid): return db_get(f"roles/{cid}/{uid}")
+def set_role(cid, uid, r): db_set(f"roles/{cid}/{uid}", r)
+def rm_role(cid, uid): db_set(f"roles/{cid}/{uid}", None)
 
-def get_role(chat_id, user_id):
-    return db_get(f"roles/{chat_id}/{user_id}", None)
-
-
-def set_role(chat_id, user_id, role):
-    db_set(f"roles/{chat_id}/{user_id}", role)
-
-
-def remove_role(chat_id, user_id):
-    db_set(f"roles/{chat_id}/{user_id}", None)
-
-
-async def is_tg_owner(update, context):
+async def is_tg_owner(upd, ctx):
     try:
-        admins = await context.bot.get_chat_administrators(update.effective_chat.id)
-        return any(a.user.id == update.effective_user.id and a.status == "creator" for a in admins)
-    except:
-        return False
+        admins = await ctx.bot.get_chat_administrators(upd.effective_chat.id)
+        return any(a.user.id == upd.effective_user.id and a.status == "creator" for a in admins)
+    except: return False
 
+async def is_priv(upd, ctx, min_role=ROLE_OWNER):
+    r = get_role(upd.effective_chat.id, upd.effective_user.id)
+    return (bool(r and ROLE_RANK.get(r,0) >= ROLE_RANK.get(min_role,99))) or await is_tg_owner(upd, ctx)
 
-async def is_privileged(update, context, min_role=ROLE_OWNER):
-    role = get_role(update.effective_chat.id, update.effective_user.id)
-    return (bool(role and ROLE_RANK.get(role, 0) >= ROLE_RANK.get(min_role, 99))
-            or await is_tg_owner(update, context))
-
-
-async def get_target_user(update, context):
-    msg = update.message
-    if msg.reply_to_message:
-        return msg.reply_to_message.from_user
-    if msg.entities:
-        for ent in msg.entities:
-            if ent.type == "text_mention" and ent.user:
-                return ent.user
+async def get_target(upd, ctx):
+    m = upd.message
+    if m.reply_to_message: return m.reply_to_message.from_user
+    if m.entities:
+        for e in m.entities:
+            if e.type == "text_mention" and e.user: return e.user
     return None
 
-
 # ═══════════════════════════════════════════════════════════════════
-# 4. الذكاء الاصطناعي DeepSeek (async-safe)
+# 4. الذكاء الاصطناعي
 # ═══════════════════════════════════════════════════════════════════
-async def ask_deepseek(prompt: str) -> str:
-    api_key = "sk-f5149facf1164e6db0af5fd276c8fbfe"
-    url = "https://api.deepseek.com/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    data = {
-        "model": "deepseek-chat",
-        "messages": [
-            {"role": "system", "content": (
-                "أنت مساعد ذكي اسمك سيك، تتحدث باللهجة العراقية أحياناً. "
-                "كن ودوداً وخفيف الظل ومفيداً. ردودك مختصرة وواضحة."
-            )},
-            {"role": "user", "content": prompt}
-        ],
-        "max_tokens": 1000
-    }
-
+async def ask_ai(prompt: str) -> str:
+    api_key = os.environ.get("DEEPSEEK_KEY", "sk-f5149facf1164e6db0af5fd276c8fbfe")
     def _call():
         try:
-            res = requests.post(url, headers=headers, json=data, timeout=25)
-            res.raise_for_status()
-            return res.json()["choices"][0]["message"]["content"]
-        except requests.exceptions.Timeout:
-            return "اعذرني، السيرفر ما رد. حاول ثاني 😅"
-        except Exception as e:
-            logger.error(f"DeepSeek error: {e}")
-            return "صار خطأ بالذكاء الاصطناعي، حاول لاحقاً 🙁"
-
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _call)
-
+            r = requests.post("https://api.deepseek.com/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model":"deepseek-chat","max_tokens":1000,"messages":[
+                    {"role":"system","content":"أنت مساعد ذكي اسمك سيك، تتحدث باللهجة العراقية أحياناً. كن مختصراً ومفيداً."},
+                    {"role":"user","content":prompt}
+                ]}, timeout=30)
+            logger.info(f"[AI] status={r.status_code}")
+            if r.status_code == 401: return "❌ مفتاح API منتهي. راجع المتغيرات البيئية (DEEPSEEK_KEY)."
+            if r.status_code == 429: return "⚠️ تجاوزت الحد. انتظر قليلاً."
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"]
+        except requests.Timeout: return "⏱ السيرفر ما رد. حاول ثاني."
+        except Exception as e: logger.error(f"[AI] {e}"); return f"❌ خطأ: {str(e)[:80]}"
+    return await asyncio.get_running_loop().run_in_executor(None, _call)
 
 # ═══════════════════════════════════════════════════════════════════
 # 5. نظام التحميل
 # ═══════════════════════════════════════════════════════════════════
-active_downloads = {}
+active_dl = {}
 
-
-def progress_hook(d, msg_id):
+def _progress(d, mid):
     if d['status'] == 'downloading':
-        percent = re.sub(r'\x1b\[[0-9;]*m', '', d.get('_percent_str', '0%').strip())
-        active_downloads[msg_id] = percent
+        pct = re.sub(r'\x1b\[[0-9;]*m','', d.get('_percent_str','0%').strip())
+        active_dl[mid] = pct
 
-
-async def update_progress(context, chat_id, msg_id, status_msg_id, is_photo=False):
+async def _progress_updater(ctx, cid, mid, smid, is_photo=False):
     last = ""
-    while msg_id in active_downloads:
-        current = active_downloads.get(msg_id, "")
-        if current and current != last:
+    while mid in active_dl:
+        cur = active_dl.get(mid,"")
+        if cur and cur != last:
             try:
-                txt = f"⏳ جاري التحميل: {current}"
-                if is_photo:
-                    await context.bot.edit_message_caption(chat_id=chat_id, message_id=status_msg_id, caption=txt)
-                else:
-                    await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=status_msg_id)
-                last = current
-            except:
-                pass
+                t = f"⏳ جاري التحميل: {cur}"
+                if is_photo: await ctx.bot.edit_message_caption(chat_id=cid, message_id=smid, caption=t)
+                else: await ctx.bot.edit_message_text(t, chat_id=cid, message_id=smid)
+                last = cur
+            except: pass
         await asyncio.sleep(2.5)
 
+FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 
-def get_available_qualities(url):
-    """جلب الجودات المتاحة للفيديو"""
-    try:
-        opts = {
-            'quiet': True, 'noplaylist': True, 'nocheckcertificate': True,
-            'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
-        }
-        with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            heights = set()
-            for f in info.get('formats', []):
-                h = f.get('height')
-                if h and f.get('vcodec') != 'none':
-                    heights.add(h)
-            return sorted(heights, reverse=True), info
-    except Exception as e:
-        logger.error(f"Quality fetch error: {e}")
-        return [], None
-
-
-async def download_media(url, media_type, quality, msg_id, chat_id, context, status_msg_id, is_photo=False):
-    tmp = tempfile.mkdtemp()
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-    ydl_opts = {
-        'outtmpl': os.path.join(tmp, '%(title)s.%(ext)s'),
-        'quiet': True,
-        'noplaylist': True,
-        'progress_hooks': [lambda d: progress_hook(d, msg_id)],
-        'nocheckcertificate': True,
-        'geo_bypass': True,
-        'extractor_retries': 3,
-        'ffmpeg_location': ffmpeg_exe,
+def _base_opts(mid):
+    opts = {
+        'outtmpl': os.path.join(tempfile.mkdtemp(), '%(title)s.%(ext)s'),
+        'quiet': True, 'noplaylist': True, 'nocheckcertificate': True,
+        'geo_bypass': True, 'extractor_retries': 3, 'retries': 3,
+        'ffmpeg_location': FFMPEG,
+        'progress_hooks': [lambda d: _progress(d, mid)],
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
         },
     }
-    if os.path.exists('cookies.txt'):
-        ydl_opts['cookiefile'] = 'cookies.txt'
+    if os.path.exists('cookies.txt'): opts['cookiefile'] = 'cookies.txt'
+    return opts
+
+def get_qualities(url: str):
+    try:
+        opts = {**_base_opts(0), 'skip_download': True}
+        opts.pop('progress_hooks')
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            heights = {f.get('height') for f in info.get('formats',[]) if f.get('height') and f.get('vcodec','none') != 'none'}
+            return sorted(heights, reverse=True), info
+    except Exception as e:
+        logger.error(f"[qualities] {e}")
+        return [], None
+
+def build_quality_kb(heights, uid, uhash, emoji="🎬"):
+    standard = [2160,1440,1080,720,480,360,240,144]
+    avail = [q for q in standard if any(h >= q*0.85 for h in heights)] if heights else [720,480,360]
+    avail = avail[:6]
+    rows, row = [], []
+    for q in avail:
+        row.append(InlineKeyboardButton(f"{emoji} {q}p", callback_data=f"dl_v{q}_{uid}_{uhash}"))
+        if len(row)==2: rows.append(row); row=[]
+    if row: rows.append(row)
+    rows.append([InlineKeyboardButton("🎵 صوت MP3", callback_data=f"dl_audio_{uid}_{uhash}")])
+    return InlineKeyboardMarkup(rows)
+
+async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=False):
+    opts = _base_opts(mid)
+    opts['outtmpl'] = opts['outtmpl'].replace('%(title)s', '%(id)s')
+    tmp = os.path.dirname(opts['outtmpl'])
 
     if media_type == "audio":
-        ydl_opts['format'] = 'bestaudio/best'
-        ydl_opts['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192'
-        }]
+        opts['format'] = 'bestaudio/best'
+        opts['postprocessors'] = [{'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':'192'}]
     else:
-        h = int(quality) if quality and quality.isdigit() else 720
-        ydl_opts['format'] = (
-            f'bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/'
-            f'bestvideo[height<={h}]+bestaudio/best[height<={h}]/best'
-        )
-        ydl_opts['merge_output_format'] = 'mp4'
+        h = int(quality) if quality and str(quality).isdigit() else 720
+        opts['format'] = (f'bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/'
+                          f'bestvideo[height<={h}]+bestaudio/best[height<={h}]/best[ext=mp4]/best')
+        opts['merge_output_format'] = 'mp4'
 
-    active_downloads[msg_id] = "0%"
-    progress_task = asyncio.create_task(
-        update_progress(context, chat_id, msg_id, status_msg_id, is_photo)
-    )
+    active_dl[mid] = "0%"
+    task = asyncio.create_task(_progress_updater(ctx, cid, mid, smid, is_photo))
 
     def run():
-        with YoutubeDL(ydl_opts) as ydl:
+        with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             for f in os.listdir(tmp):
-                if f.endswith(('.mp3', '.mp4', '.m4a', '.webm', '.mkv')):
-                    return os.path.join(tmp, f), info.get('title', 'media')
+                if f.endswith(('.mp3','.mp4','.m4a','.webm','.mkv')):
+                    return os.path.join(tmp, f), info.get('title','media')
         return None, None
 
-    loop = asyncio.get_running_loop()
     try:
-        path, title = await loop.run_in_executor(None, run)
-        active_downloads.pop(msg_id, None)
-        progress_task.cancel()
+        path, title = await asyncio.get_running_loop().run_in_executor(None, run)
+        active_dl.pop(mid, None); task.cancel()
         return path, title, tmp
     except Exception as e:
-        logger.error(f"Download error: {e}")
-        active_downloads.pop(msg_id, None)
-        progress_task.cancel()
+        logger.error(f"[download] {e}")
+        active_dl.pop(mid, None); task.cancel()
         shutil.rmtree(tmp, ignore_errors=True)
         return None, None, None
 
-
-def download_tiktok_api(url):
-    """تحميل تيك توك / دوين عبر API"""
-    api = f'https://www.tikwm.com/api/?url={url}&hd=1'
-    try:
-        res = requests.get(api, timeout=20).json()
-        if res.get('code') == 0 and 'data' in res:
-            d = res['data']
-            author = d.get('author', {}).get('unique_id', 'مجهول')
-            music = d.get('music', '')
-            if isinstance(music, dict):
-                music = music.get('play', '')
-            if 'images' in d and d['images']:
-                return {'type': 'images', 'data': d['images'], 'author': author, 'music': music}
-            return {'type': 'video', 'data': d.get('hdplay') or d.get('play'), 'author': author, 'music': music}
-    except Exception as e:
-        logger.error(f"TikTok API error: {e}")
+# تيك توك + دوين عبر API
+def tiktok_api(url: str):
+    for api_url in [f'https://www.tikwm.com/api/?url={url}&hd=1',
+                    f'https://tikwm.com/api/?url={url}']:
+        try:
+            r = requests.get(api_url, timeout=20,
+                headers={'User-Agent':'Mozilla/5.0','Accept':'application/json'}).json()
+            if r.get('code') == 0 and 'data' in r:
+                d = r['data']
+                author = d.get('author',{}).get('unique_id','مجهول')
+                music = d.get('music','')
+                if isinstance(music, dict): music = music.get('play','')
+                if d.get('images'): return {'type':'images','data':d['images'],'author':author,'music':music}
+                vid = d.get('hdplay') or d.get('play')
+                if vid: return {'type':'video','data':vid,'author':author,'music':music}
+        except Exception as e: logger.error(f"[tikwm] {e}")
     return None
-
-
-def build_quality_keyboard(heights, user_id, url_hash, platform_emoji="🎬"):
-    """بناء أزرار الجودة"""
-    standard = [2160, 1440, 1080, 720, 480, 360, 240, 144]
-    available = []
-    if heights:
-        for q in standard:
-            if any(h >= q * 0.85 for h in heights):
-                available.append(q)
-    if not available:
-        available = [720, 480, 360]
-    available = available[:6]
-
-    rows = []
-    row = []
-    for q in available:
-        row.append(InlineKeyboardButton(f"{platform_emoji} {q}p", callback_data=f"dl_vid{q}_{user_id}_{url_hash}"))
-        if len(row) == 2:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-    rows.append([InlineKeyboardButton("🎵 صوت MP3 عالي الجودة", callback_data=f"dl_audio_{user_id}_{url_hash}")])
-    return InlineKeyboardMarkup(rows)
-
 
 # ═══════════════════════════════════════════════════════════════════
 # 6. معالجات الروابط
 # ═══════════════════════════════════════════════════════════════════
-async def handle_youtube_link(update, context, text, user_id):
-    msg = update.message
-    url_match = re.search(r'https?://\S+', text)
-    if not url_match:
-        return
-    url = url_match.group()
-    wait_msg = await msg.reply_text("🔍 جاري جلب معلومات الفيديو من يوتيوب...")
-
-    loop = asyncio.get_running_loop()
-    heights, info = await loop.run_in_executor(None, lambda: get_available_qualities(url))
-
+async def yt_handler(upd, ctx, url, uid):
+    msg = upd.message
+    wm = await msg.reply_text("🔍 جاري جلب معلومات الفيديو...")
+    heights, info = await asyncio.get_running_loop().run_in_executor(None, lambda: get_qualities(url))
     if not info:
-        await wait_msg.edit_text(
-            "❌ فشل جلب بيانات الرابط.\n"
-            "• تأكد أن الفيديو عام وغير مقيد\n"
-            "• جرب نسخ الرابط مباشرة من يوتيوب"
-        )
-        return
-
-    url_hash = str(random.randint(10000, 99999))
-    context.bot_data[url_hash] = url
-
-    keyboard = build_quality_keyboard(heights, user_id, url_hash, "🎬")
-    title = info.get('title', 'فيديو يوتيوب')[:60]
-    duration = info.get('duration', 0)
-    dur_str = f"{duration // 60}:{duration % 60:02d}" if duration else "غير معروف"
-    views = info.get('view_count', 0)
-    views_str = f"{views:,}" if views else "—"
-
-    caption = (
-        f"🎬 <b>{title}</b>\n"
-        f"⏱ المدة: <code>{dur_str}</code>\n"
-        f"👁 المشاهدات: <code>{views_str}</code>\n\n"
-        f"👇 اختر الجودة:"
-    )
-
+        return await wm.edit_text("❌ فشل جلب البيانات.\n• تأكد أن الفيديو عام\n• جرب تقصير الرابط")
+    uhash = str(random.randint(10000,99999)); ctx.bot_data[uhash] = url
+    dur = info.get('duration',0)
+    cap = (f"🎬 <b>{info.get('title','')[:60]}</b>\n"
+           f"⏱ {dur//60}:{dur%60:02d} | 👁 {info.get('view_count',0):,}")
+    kb = build_quality_kb(heights, uid, uhash, "🎬")
     try:
-        if info.get('thumbnail'):
-            await context.bot.send_photo(msg.chat_id, info['thumbnail'],
-                                         caption=caption, parse_mode="HTML", reply_markup=keyboard)
-        else:
-            await msg.reply_text(caption, parse_mode="HTML", reply_markup=keyboard)
-        await wait_msg.delete()
+        if info.get('thumbnail'): await ctx.bot.send_photo(msg.chat_id, info['thumbnail'], caption=cap, parse_mode="HTML", reply_markup=kb)
+        else: await msg.reply_text(cap, parse_mode="HTML", reply_markup=kb)
+        await wm.delete()
+    except: await wm.edit_text(cap, parse_mode="HTML", reply_markup=kb)
+
+async def fb_handler(upd, ctx, url, uid):
+    """فيس بوك — يستخدم user-agent موبايل لتجاوز القيود"""
+    msg = upd.message
+    wm = await msg.reply_text("🔍 جاري جلب معلومات الفيديو من فيس بوك...")
+    def _get_info():
+        opts = {
+            'quiet': True, 'noplaylist': True, 'nocheckcertificate': True,
+            'skip_download': True, 'geo_bypass': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://www.facebook.com/',
+            },
+        }
+        if os.path.exists('cookies.txt'): opts['cookiefile'] = 'cookies.txt'
+        with YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+    try:
+        info = await asyncio.get_running_loop().run_in_executor(None, _get_info)
     except Exception as e:
-        await wait_msg.edit_text(f"❌ خطأ أثناء إرسال الأزرار: {str(e)[:100]}")
-
-
-async def handle_twitter_link(update, context, text, chat_id):
-    msg = update.message
-    url_match = re.search(r'https?://\S+', text)
-    if not url_match:
-        return
-    url = url_match.group()
-    user_id = str(msg.from_user.id)
-    wait_msg = await msg.reply_text("🔍 جاري جلب معلومات المقطع من X...")
-
-    loop = asyncio.get_running_loop()
-    heights, info = await loop.run_in_executor(None, lambda: get_available_qualities(url))
-
+        logger.error(f"[FB] {e}")
+        info = None
     if not info:
-        # محاولة تحميل مباشر كبديل
-        await wait_msg.edit_text("⏳ جاري التحميل المباشر من X...")
-        filepath, title, tmp_dir = await download_media(
-            url, "video", "720", msg.message_id, chat_id, context, wait_msg.message_id
-        )
-        if filepath and os.path.exists(filepath):
-            await wait_msg.edit_text("📤 جاري الرفع...")
-            with open(filepath, 'rb') as f:
-                await context.bot.send_video(chat_id, f, caption="✅ تم التحميل من X 🐦")
-            await wait_msg.delete()
-        else:
-            await wait_msg.edit_text("❌ فشل التحميل من X. قد يكون المقطع خاص أو محذوف.")
-        if tmp_dir:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        return
-
-    url_hash = str(random.randint(10000, 99999))
-    context.bot_data[url_hash] = url
-
-    keyboard = build_quality_keyboard(heights, user_id, url_hash, "🐦")
-    title = info.get('title', 'مقطع X')[:60]
-    caption = f"🐦 <b>{title}</b>\n\n👇 اختر الجودة:"
-
+        return await wm.edit_text("❌ فشل جلب الفيديو من فيس بوك.\n• الفيديو يجب يكون عام\n• جرب نسخ الرابط مباشرة من المتصفح")
+    uhash = str(random.randint(10000,99999)); ctx.bot_data[uhash] = (url, 'facebook')
+    heights = {f.get('height') for f in info.get('formats',[]) if f.get('height') and f.get('vcodec','none') != 'none'}
+    kb = build_quality_kb(sorted(heights, reverse=True), uid, uhash, "📘")
+    cap = f"📘 <b>{info.get('title','فيديو فيس بوك')[:60]}</b>\n\nاختر الجودة:"
     try:
-        if info.get('thumbnail'):
-            await context.bot.send_photo(msg.chat_id, info['thumbnail'],
-                                         caption=caption, parse_mode="HTML", reply_markup=keyboard)
-        else:
-            await msg.reply_text(caption, parse_mode="HTML", reply_markup=keyboard)
-        await wait_msg.delete()
-    except Exception as e:
-        await wait_msg.edit_text(f"❌ خطأ: {str(e)[:100]}")
+        if info.get('thumbnail'): await ctx.bot.send_photo(msg.chat_id, info['thumbnail'], caption=cap, parse_mode="HTML", reply_markup=kb)
+        else: await msg.reply_text(cap, parse_mode="HTML", reply_markup=kb)
+        await wm.delete()
+    except: await wm.edit_text(cap, parse_mode="HTML", reply_markup=kb)
 
-
-async def handle_facebook_link(update, context, text, chat_id):
-    msg = update.message
-    url_match = re.search(r'https?://\S+', text)
-    if not url_match:
-        return
-    url = url_match.group()
-    user_id = str(msg.from_user.id)
-    wait_msg = await msg.reply_text("🔍 جاري جلب معلومات الفيديو من فيس بوك...")
-
-    loop = asyncio.get_running_loop()
-    heights, info = await loop.run_in_executor(None, lambda: get_available_qualities(url))
-
-    if not info:
-        await wait_msg.edit_text(
-            "❌ فشل جلب بيانات الفيس بوك.\n"
-            "• تأكد أن الفيديو عام وليس خاصاً\n"
-            "• جرب نسخ الرابط الكامل"
-        )
-        return
-
-    url_hash = str(random.randint(10000, 99999))
-    context.bot_data[url_hash] = url
-
-    keyboard = build_quality_keyboard(heights, user_id, url_hash, "📘")
-    title = info.get('title', 'فيديو فيس بوك')[:60]
-    caption = f"📘 <b>{title}</b>\n\n👇 اختر الجودة:"
-
+async def x_handler(upd, ctx, url, uid):
+    """تويتر/X — مع fallback تلقائي"""
+    msg = upd.message
+    cid = msg.chat_id
+    wm = await msg.reply_text("🔍 جاري جلب معلومات المقطع من X...")
+    def _get_info():
+        opts = {
+            'quiet': True, 'noplaylist': True, 'nocheckcertificate': True,
+            'skip_download': True, 'geo_bypass': True,
+            'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'},
+        }
+        if os.path.exists('cookies.txt'): opts['cookiefile'] = 'cookies.txt'
+        with YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
     try:
-        if info.get('thumbnail'):
-            await context.bot.send_photo(msg.chat_id, info['thumbnail'],
-                                         caption=caption, parse_mode="HTML", reply_markup=keyboard)
-        else:
-            await msg.reply_text(caption, parse_mode="HTML", reply_markup=keyboard)
-        await wait_msg.delete()
+        info = await asyncio.get_running_loop().run_in_executor(None, _get_info)
+        heights = {f.get('height') for f in info.get('formats',[]) if f.get('height') and f.get('vcodec','none') != 'none'}
     except Exception as e:
-        await wait_msg.edit_text(f"❌ خطأ: {str(e)[:100]}")
-
-
-async def handle_instagram_link(update, context, text, chat_id):
-    msg = update.message
-    url_match = re.search(r'https?://\S+', text)
-    if not url_match:
+        logger.error(f"[X] info error: {e}"); info = None; heights = set()
+    if not info or not heights:
+        # Fallback: تحميل مباشر بأفضل جودة
+        await wm.edit_text("⏳ جاري التحميل المباشر من X...")
+        fp, title, tmp = await do_download(url,"video","720",msg.message_id,cid,ctx,wm.message_id)
+        if fp and os.path.exists(fp):
+            await wm.edit_text("📤 جاري الرفع...")
+            with open(fp,'rb') as f: await ctx.bot.send_video(cid, f, caption="✅ تم من X 🐦", supports_streaming=True)
+            await wm.delete()
+        else: await wm.edit_text("❌ فشل التحميل من X.\n• قد يكون المقطع محمي أو الحساب خاص\n• أضف cookies.txt من حساب X لنتائج أفضل")
+        if tmp: shutil.rmtree(tmp, ignore_errors=True)
         return
-    url = url_match.group()
-    wait_msg = await msg.reply_text("📸 جاري تحميل المحتوى من انستغرام...")
-
-    tmp = tempfile.mkdtemp()
-    ydl_opts = {
-        'outtmpl': os.path.join(tmp, '%(id)s.%(ext)s'),
-        'quiet': True,
-        'noplaylist': False,
-        'nocheckcertificate': True,
-        'ffmpeg_location': imageio_ffmpeg.get_ffmpeg_exe(),
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15'
-        },
-    }
-    if os.path.exists('cookies.txt'):
-        ydl_opts['cookiefile'] = 'cookies.txt'
-
-    def _download():
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            files = [os.path.join(tmp, f) for f in os.listdir(tmp)
-                     if f.endswith(('.mp4', '.jpg', '.png', '.webp', '.jpeg'))]
-            return files, info.get('title', 'انستغرام')
-
-    loop = asyncio.get_running_loop()
+    uhash = str(random.randint(10000,99999)); ctx.bot_data[uhash] = url
+    kb = build_quality_kb(sorted(heights,reverse=True), uid, uhash, "🐦")
+    cap = f"🐦 <b>{info.get('title','مقطع X')[:60]}</b>\n\nاختر الجودة:"
     try:
-        files, title = await loop.run_in_executor(None, _download)
-        if not files:
-            await wait_msg.edit_text("❌ لم يتم العثور على محتوى للتحميل.")
-            return
+        if info.get('thumbnail'): await ctx.bot.send_photo(msg.chat_id, info['thumbnail'], caption=cap, parse_mode="HTML", reply_markup=kb)
+        else: await msg.reply_text(cap, parse_mode="HTML", reply_markup=kb)
+        await wm.delete()
+    except: await wm.edit_text(cap, parse_mode="HTML", reply_markup=kb)
 
-        await wait_msg.edit_text("📤 جاري الرفع...")
-        videos = [f for f in files if f.endswith('.mp4')]
-        images = [f for f in files if not f.endswith('.mp4')]
-
-        if videos:
-            for v in videos[:3]:
-                with open(v, 'rb') as f:
-                    await context.bot.send_video(chat_id, f,
-                                                 caption=f"📸 {title[:60]}", supports_streaming=True)
-        if images:
-            media_group = []
-            handles = []
-            for img in images[:10]:
-                fh = open(img, 'rb')
-                handles.append(fh)
-                media_group.append(InputMediaPhoto(fh))
-            try:
-                await context.bot.send_media_group(chat_id, media_group)
-            finally:
-                for fh in handles:
-                    fh.close()
-        await wait_msg.delete()
-    except Exception as e:
-        logger.error(f"Instagram error: {e}")
-        await wait_msg.edit_text(
-            "❌ فشل التحميل من انستغرام.\n"
-            "قد يتطلب تسجيل دخول أو الحساب خاص."
-        )
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
-async def handle_tiktok_link(update, context, text, chat_id, reply_to_id):
-    url_match = re.search(r'https?://\S+', text)
-    if not url_match:
-        return
-    url = url_match.group()
-    wait_msg = await update.message.reply_text("⏳ جاري تحميل المحتوى...")
-
-    # محاولة أولى عبر API
-    data = download_tiktok_api(url)
+async def tiktok_handler(upd, ctx, url, cid, reply_id):
+    msg = upd.message
+    wm = await msg.reply_text("⏳ جاري التحميل...")
+    # محاولة 1: tikwm API (يدعم تيك توك + دوين)
+    data = await asyncio.get_running_loop().run_in_executor(None, lambda: tiktok_api(url))
     if data:
-        caption = f"👤 <b>الحساب:</b> @{data['author']}"
+        cap = f"👤 <b>@{data['author']}</b>"
         try:
             if data['type'] == 'images':
-                media_items = [InputMediaPhoto(img) for img in data['data'][:10]]
-                await context.bot.send_media_group(chat_id, media_items,
-                                                   reply_to_message_id=reply_to_id)
+                media = [InputMediaPhoto(img) for img in data['data'][:10]]
+                await ctx.bot.send_media_group(cid, media, reply_to_message_id=reply_id)
                 if data.get('music'):
-                    await context.bot.send_audio(chat_id, data['music'],
-                                                 caption=caption, parse_mode="HTML")
+                    await ctx.bot.send_audio(cid, data['music'], caption=cap, parse_mode="HTML")
             else:
-                await context.bot.send_video(chat_id, data['data'],
-                                             caption=caption, parse_mode="HTML",
-                                             reply_to_message_id=reply_to_id,
-                                             supports_streaming=True)
-            await wait_msg.delete()
-            return
-        except Exception as e:
-            logger.error(f"TikTok send error: {e}")
+                await ctx.bot.send_video(cid, data['data'], caption=cap, parse_mode="HTML",
+                                         reply_to_message_id=reply_id, supports_streaming=True)
+            return await wm.delete()
+        except Exception as e: logger.error(f"[TikTok send] {e}")
+    # محاولة 2: yt-dlp مع إعدادات تيك توك خاصة
+    await wm.edit_text("⏳ محاولة بديلة...")
+    def _dl_tiktok():
+        opts = _base_opts(msg.message_id)
+        opts['format'] = 'best[ext=mp4]/best'
+        tmp = os.path.dirname(opts['outtmpl'])
+        opts['http_headers']['User-Agent'] = 'TikTok 26.2.0 rv:262018 (iPhone; iOS 14.4.2; en_US) Cronet'
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            for f in os.listdir(tmp):
+                if f.endswith(('.mp4','.webm')): return os.path.join(tmp,f), tmp
+        return None, tmp
+    fp, tmp = await asyncio.get_running_loop().run_in_executor(None, _dl_tiktok)
+    if fp and os.path.exists(fp):
+        with open(fp,'rb') as f: await ctx.bot.send_video(cid, f, caption="✅ تيك توك 🎵", supports_streaming=True)
+        await wm.delete()
+    else: await wm.edit_text("❌ فشل التحميل. قد يكون الرابط منتهياً أو الحساب خاص.")
+    if tmp: shutil.rmtree(tmp, ignore_errors=True)
 
-    # محاولة بديلة عبر yt-dlp
-    await wait_msg.edit_text("⏳ محاولة تحميل بديلة...")
-    filepath, title, tmp_dir = await download_media(
-        url, "video", "720", update.message.message_id, chat_id, context, wait_msg.message_id
-    )
-    if filepath and os.path.exists(filepath):
-        with open(filepath, 'rb') as f:
-            await context.bot.send_video(chat_id, f,
-                                         caption="✅ تيك توك 🎵",
-                                         reply_to_message_id=reply_to_id)
-        await wait_msg.delete()
-    else:
-        await wait_msg.edit_text("❌ فشل التحميل. قد يكون الرابط منتهياً أو الحساب خاص.")
-    if tmp_dir:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+async def insta_handler(upd, ctx, url, cid):
+    msg = upd.message
+    wm = await msg.reply_text("📸 جاري التحميل من انستغرام...")
+    tmp = tempfile.mkdtemp()
+    opts = {
+        'outtmpl': os.path.join(tmp,'%(id)s.%(ext)s'),
+        'quiet':True,'noplaylist':False,'nocheckcertificate':True,
+        'ffmpeg_location':FFMPEG,
+        'http_headers':{'User-Agent':'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'},
+    }
+    if os.path.exists('cookies.txt'): opts['cookiefile'] = 'cookies.txt'
+    def _dl():
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            files = [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith(('.mp4','.jpg','.jpeg','.png','.webp'))]
+            return files, info.get('title','انستغرام')
+    try:
+        files, title = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        if not files: return await wm.edit_text("❌ ما لقيت محتوى.")
+        await wm.edit_text("📤 جاري الرفع...")
+        videos = [f for f in files if f.endswith('.mp4')]
+        images = [f for f in files if not f.endswith('.mp4')]
+        for v in videos[:3]:
+            with open(v,'rb') as f: await ctx.bot.send_video(cid, f, caption=f"📸 {title[:60]}", supports_streaming=True)
+        if images:
+            handles=[]; media=[]
+            for img in images[:10]:
+                fh=open(img,'rb'); handles.append(fh); media.append(InputMediaPhoto(fh))
+            try: await ctx.bot.send_media_group(cid, media)
+            finally:
+                for fh in handles: fh.close()
+        await wm.delete()
+    except Exception as e:
+        logger.error(f"[Insta] {e}")
+        await wm.edit_text("❌ فشل التحميل من انستغرام.\nقد يتطلب تسجيل دخول (cookies.txt).")
+    finally: shutil.rmtree(tmp, ignore_errors=True)
 
+async def insta_stories_handler(upd, ctx, username, cid):
+    msg = upd.message
+    username = username.lstrip('@').strip()
+    wm = await msg.reply_text(f"📸 جاري جلب ستوريات @{username}...")
+    url = f"https://www.instagram.com/stories/{username}/"
+    tmp = tempfile.mkdtemp()
+    opts = {
+        'outtmpl': os.path.join(tmp,'%(id)s.%(ext)s'),
+        'quiet':True,'noplaylist':False,'nocheckcertificate':True,'ffmpeg_location':FFMPEG,
+        'http_headers':{'User-Agent':'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15'},
+    }
+    if os.path.exists('cookies.txt'): opts['cookiefile'] = 'cookies.txt'
+    def _dl():
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            files = [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith(('.mp4','.jpg','.jpeg','.png'))]
+            return files
+    try:
+        files = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        if not files:
+            return await wm.edit_text(f"❌ ما لقيت ستوريات لـ @{username}\n• الحساب خاص؟ تحتاج cookies.txt")
+        await wm.edit_text(f"📤 رفع {len(files)} ستوري...")
+        for v in [f for f in files if f.endswith('.mp4')][:5]:
+            with open(v,'rb') as f: await ctx.bot.send_video(cid, f, caption=f"📸 @{username}", supports_streaming=True)
+        imgs = [f for f in files if not f.endswith('.mp4')][:10]
+        if imgs:
+            handles=[]; media=[]
+            for i in imgs:
+                fh=open(i,'rb'); handles.append(fh); media.append(InputMediaPhoto(fh))
+            try: await ctx.bot.send_media_group(cid, media)
+            finally:
+                for fh in handles: fh.close()
+        await wm.delete()
+    except Exception as e:
+        logger.error(f"[Stories] {e}")
+        await wm.edit_text(f"❌ فشل تحميل ستوريات @{username}\nالحساب خاص أو الستوريات فارغة.")
+    finally: shutil.rmtree(tmp, ignore_errors=True)
 
 # ═══════════════════════════════════════════════════════════════════
-# 7. لعبة إكس أو (Tic-Tac-Toe)
+# 7. لعبة إكس أو
 # ═══════════════════════════════════════════════════════════════════
-def ttt_render_board(board, game_id):
-    symbols = {'': '⬜', 'X': '❌', 'O': '⭕'}
+def ttt_kb(board, gid):
+    S = {'':'⬜','X':'❌','O':'⭕'}
     rows = []
-    for i in range(0, 9, 3):
+    for i in range(0,9,3):
         row = []
         for j in range(3):
-            idx = i + j
-            cb = f"ttt_{game_id}_{idx}" if board[idx] == '' else "ttt_noop"
-            row.append(InlineKeyboardButton(symbols[board[idx]], callback_data=cb))
+            idx=i+j
+            cb = f"ttt_{gid}_{idx}" if board[idx]=='' else "ttt_noop"
+            row.append(InlineKeyboardButton(S[board[idx]], callback_data=cb))
         rows.append(row)
-    rows.append([InlineKeyboardButton("🔄 لعبة جديدة", callback_data=f"ttt_reset_{game_id}")])
+    rows.append([InlineKeyboardButton("🔄 لعبة جديدة", callback_data=f"ttt_reset_{gid}")])
     return InlineKeyboardMarkup(rows)
 
-
-def check_ttt_winner(board):
-    lines = [(0, 1, 2), (3, 4, 5), (6, 7, 8),
-             (0, 3, 6), (1, 4, 7), (2, 5, 8),
-             (0, 4, 8), (2, 4, 6)]
-    for a, b, c in lines:
-        if board[a] and board[a] == board[b] == board[c]:
-            return board[a]
+def ttt_winner(b):
+    for a,c,d in [(0,1,2),(3,4,5),(6,7,8),(0,3,6),(1,4,7),(2,5,8),(0,4,8),(2,4,6)]:
+        if b[a] and b[a]==b[c]==b[d]: return b[a]
     return None
 
-
-def ttt_bot_move(board):
-    """ذكاء البوت: فوز > حجب > وسط > زاوية > جانب"""
-    lines = [(0, 1, 2), (3, 4, 5), (6, 7, 8),
-             (0, 3, 6), (1, 4, 7), (2, 5, 8),
-             (0, 4, 8), (2, 4, 6)]
-    for sym in ['O', 'X']:
-        for a, b, c in lines:
-            vals = [board[a], board[b], board[c]]
-            if vals.count(sym) == 2 and vals.count('') == 1:
-                return [a, b, c][vals.index('')]
-    for i in [4, 0, 2, 6, 8, 1, 3, 5, 7]:
-        if board[i] == '':
-            return i
+def ttt_bot(b):
+    lines = [(0,1,2),(3,4,5),(6,7,8),(0,3,6),(1,4,7),(2,5,8),(0,4,8),(2,4,6)]
+    for sym in ['O','X']:
+        for a,c,d in lines:
+            v=[b[a],b[c],b[d]]
+            if v.count(sym)==2 and v.count('')==1: return [a,c,d][v.index('')]
+    for i in [4,0,2,6,8,1,3,5,7]:
+        if b[i]=='': return i
     return None
 
-
 # ═══════════════════════════════════════════════════════════════════
-# 8. الهاندلرات الأساسية
+# 8. /start
 # ═══════════════════════════════════════════════════════════════════
-async def start_command(update, context):
-    msg = update.message
+async def cmd_start(upd, ctx):
+    msg = upd.message
     if msg.chat.type == 'private' and msg.text.startswith('/start w_'):
         try:
-            parts = msg.text.replace('/start w_', '').split('_')
-            sender_id = int(parts[0])
-            target_id = int(parts[1])
-            chat_id = int(parts[2].replace('m', '-'))
+            parts = msg.text.replace('/start w_','').split('_')
+            sender_id,target_id = int(parts[0]),int(parts[1])
+            chat_id = int(parts[2].replace('m','-'))
             if msg.from_user.id != sender_id:
-                return await msg.reply_text("عذراً، هذا الرابط مو إلك! ❌")
-            context.user_data['whisper_target'] = target_id
-            context.user_data['whisper_chat'] = chat_id
-            await msg.reply_text(
-                "🔒 *أرسل همستك الآن هنا بالخاص:*\n"
-                "_سيتم إرسالها للكروب تلقائياً بشكل مشفر_ 🤫",
-                parse_mode="Markdown"
-            )
-        except:
-            await msg.reply_text("حدث خطأ في رابط الهمسة.")
+                return await msg.reply_text("الرابط مو إلك! ❌")
+            ctx.user_data.update({'wt':target_id,'wc':chat_id})
+            await msg.reply_text("🔒 *أرسل همستك الآن:*\n_(سيتم إرسالها للكروب تلقائياً)_ 🤫", parse_mode="Markdown")
+        except: await msg.reply_text("خطأ في رابط الهمسة.")
     else:
         await msg.reply_text(
-            "أهلاً وسهلاً! 🎉 أنا بوت متكامل للإدارة والتحميل والتسلية!\n\n"
-            "📥 <b>أرسل روابط من:</b>\n"
-            "يوتيوب • تيك توك • فيس بوك • X • انستغرام • دوين\n\n"
-            "💬 <b>أو تحدث معي</b> بأي موضوع وسأرد عليك بالذكاء الاصطناعي!\n\n"
-            "👥 أضفني لمجموعتك كمشرف واكتب <code>الاوامر</code>",
+            "أهلاً! 🎉 أنا بوت متكامل للإدارة والتحميل والتسلية!\n\n"
+            "📥 <b>أرسل رابط من:</b> يوتيوب • تيك توك • دوين • فيس بوك • X • انستغرام\n"
+            "💬 أو كلمني مباشرة وسأرد بالذكاء الاصطناعي\n\n"
+            "اكتب <code>الاوامر</code> في كروبك لقائمة الأوامر الكاملة",
             parse_mode="HTML"
         )
 
-
-async def handle_private_whisper(update, context):
-    msg = update.message
-    if not msg.text:
-        return
-    target_id = context.user_data.get('whisper_target')
-    chat_id = context.user_data.get('whisper_chat')
-    if not target_id or not chat_id:
-        return
-
-    w_id = str(random.randint(100000, 999999))
-    db_set(f"whispers/{w_id}", {
-        'text': msg.text,
-        'sender': msg.from_user.id,
-        'target': target_id
-    })
-    context.user_data.pop('whisper_target', None)
-    context.user_data.pop('whisper_chat', None)
-
-    markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔒 اضغط لقراءة الهمسة", callback_data=f"show_w_{w_id}")
-    ]])
-    try:
-        member = await context.bot.get_chat_member(chat_id, target_id)
-        target_name = member.user.first_name
-    except:
-        target_name = "العضو المستهدف"
-
-    await context.bot.send_message(
-        chat_id,
-        f"🤫 *همسة سرية جديدة!*\n"
-        f"👤 من: {msg.from_user.first_name}\n"
-        f"📨 إلى: {target_name}\n\n"
-        f"_فقط المستهدف يقدر يقرأها_ 👇",
-        reply_markup=markup, parse_mode="Markdown"
-    )
-    await msg.reply_text("✅ تم إرسال همستك للكروب بنجاح! 🎉")
-
-
 # ═══════════════════════════════════════════════════════════════════
-# 9. معالج الأزرار الكبير
+# 9. معالج الأزرار
 # ═══════════════════════════════════════════════════════════════════
-async def button_callback(update, context):
-    query = update.callback_query
-    data = query.data
+async def btn_cb(upd, ctx):
+    q = upd.callback_query
+    d = q.data
 
-    # ── همسة سرية ──
-    if data.startswith('show_w_'):
-        w = db_get(f"whispers/{data[7:]}", None)
+    # همسة
+    if d.startswith('show_w_'):
+        w = db_get(f"whispers/{d[7:]}")
         if w:
-            if query.from_user.id in [w['target'], w['sender']]:
-                await query.answer(text=f"💬 الهمسة:\n\n{w['text']}", show_alert=True)
-            else:
-                await query.answer(text="الهمسة مو إلك عيني! ❌👀", show_alert=True)
-        else:
-            await query.answer(text="هذه الهمسة قديمة أو غير موجودة.", show_alert=True)
+            if q.from_user.id in [w['target'],w['sender']]:
+                await q.answer(f"💬 الهمسة:\n\n{w['text']}", show_alert=True)
+            else: await q.answer("الهمسة مو إلك! ❌", show_alert=True)
+        else: await q.answer("الهمسة قديمة.", show_alert=True)
         return
 
-    # ── قوائم الأوامر ──
-    if data.startswith("cmd_"):
-        await query.answer()
-        if data == "cmd_main":
-            await query.edit_message_text(TEXT_MAIN_MENU, parse_mode="HTML",
-                                          reply_markup=get_main_keyboard())
-        elif data == "cmd_admin":
-            await query.edit_message_text(TEXT_ADMIN_CMDS, parse_mode="HTML",
-                                          reply_markup=get_back_keyboard())
-        elif data == "cmd_fun":
-            await query.edit_message_text(TEXT_FUN_CMDS, parse_mode="HTML",
-                                          reply_markup=get_back_keyboard())
-        elif data == "cmd_dl":
-            await query.edit_message_text(TEXT_DOWNLOAD_CMDS, parse_mode="HTML",
-                                          reply_markup=get_back_keyboard())
+    # قوائم
+    if d.startswith("cmd_"):
+        await q.answer()
+        m = {"cmd_main":(TEXT_MAIN,mk_main()),"cmd_admin":(TEXT_ADMIN,mk_back()),
+             "cmd_fun":(TEXT_FUN,mk_back()),"cmd_dl":(TEXT_DL,mk_back())}
+        if d in m: await q.edit_message_text(m[d][0], parse_mode="HTML", reply_markup=m[d][1])
         return
 
-    # ── أزرار التحميل ──
-    if data.startswith("dl_"):
-        parts = data.split('_', 3)
-        if len(parts) < 4:
-            return await query.answer()
-        action = parts[1]
-        uid = parts[2]
-        url_hash = parts[3]
-
-        if str(query.from_user.id) != uid:
-            return await query.answer("هذه الأزرار لطلب شخص ثاني! 🚫", show_alert=True)
-
-        await query.answer()
-        url = context.bot_data.get(url_hash)
-        is_photo = bool(query.message.photo)
-
-        async def edit_msg(text):
+    # تحميل
+    if d.startswith("dl_"):
+        parts = d.split('_',3)
+        if len(parts)<4: return await q.answer()
+        action,uid,uhash = parts[1],parts[2],parts[3]
+        if str(q.from_user.id) != uid:
+            return await q.answer("الأزرار لشخص ثاني! 🚫", show_alert=True)
+        await q.answer()
+        raw = ctx.bot_data.get(uhash)
+        url = raw[0] if isinstance(raw,tuple) else raw
+        is_fb = isinstance(raw,tuple) and raw[1]=='facebook'
+        is_photo = bool(q.message.photo)
+        async def em(t):
             try:
-                if is_photo:
-                    await query.edit_message_caption(text)
-                else:
-                    await query.edit_message_text(text)
-            except:
-                pass
+                if is_photo: await q.edit_message_caption(t)
+                else: await q.edit_message_text(t)
+            except: pass
+        if not url: return await em("❌ الرابط منتهي. أعد إرساله.")
+        await em("⏳ جاري تحضير الملف...")
+        mt = "audio" if action=="audio" else "video"
+        ql = action.replace("v","") if action.startswith("v") and action!="video" else "720"
 
-        if not url:
-            await edit_msg("❌ الرابط منتهي الصلاحية، أعد إرساله.")
-            return
-
-        await edit_msg("⏳ جاري تحضير الملف...")
-
-        media_type = "audio" if action == "audio" else "video"
-        quality = action.replace("vid", "") if action.startswith("vid") else "720"
-
-        filepath, title, tmp_dir = await download_media(
-            url, media_type, quality,
-            query.message.message_id, query.message.chat_id,
-            context, query.message.message_id, is_photo=is_photo
-        )
-
-        if filepath and os.path.exists(filepath):
-            await edit_msg("📤 جاري الرفع...")
-            try:
-                with open(filepath, 'rb') as f:
-                    if media_type == "audio":
-                        await context.bot.send_audio(
-                            query.message.chat_id, f,
-                            title=title or "audio"
-                        )
-                    else:
-                        await context.bot.send_video(
-                            query.message.chat_id, f,
-                            caption=f"✅ {(title or '')[:200]}",
-                            supports_streaming=True
-                        )
-                await query.message.delete()
-            except Exception as e:
-                await edit_msg(f"❌ فشل الرفع: {str(e)[:100]}")
+        # إعدادات خاصة لفيس بوك
+        if is_fb:
+            from yt_dlp import YoutubeDL as YDL
+            h = int(ql) if ql.isdigit() else 720
+            tmp = tempfile.mkdtemp()
+            opts = _base_opts(q.message.message_id)
+            opts['outtmpl'] = os.path.join(tmp,'%(id)s.%(ext)s')
+            opts['format'] = f'best[height<={h}][ext=mp4]/best[height<={h}]/best[ext=mp4]/best'
+            opts['http_headers']['User-Agent'] = 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36'
+            opts['http_headers']['Referer'] = 'https://www.facebook.com/'
+            def _fb_dl():
+                with YDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    for f in os.listdir(tmp):
+                        if f.endswith(('.mp4','.webm')): return os.path.join(tmp,f), info.get('title','')
+                return None,None
+            fp,title = await asyncio.get_running_loop().run_in_executor(None, _fb_dl)
         else:
-            await edit_msg(
-                "❌ فشل التحميل.\n"
-                "• الفيديو قد يكون محمياً بحقوق النشر\n"
-                "• جرب جودة أقل أو أعد إرسال الرابط"
-            )
+            fp,title,tmp = await do_download(url,mt,ql,q.message.message_id,q.message.chat_id,ctx,q.message.message_id,is_photo)
 
-        if tmp_dir:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        if fp and os.path.exists(fp):
+            await em("📤 جاري الرفع...")
+            try:
+                with open(fp,'rb') as f:
+                    if mt=="audio": await ctx.bot.send_audio(q.message.chat_id,f,title=title or "audio")
+                    else: await ctx.bot.send_video(q.message.chat_id,f,caption=f"✅ {(title or '')[:200]}",supports_streaming=True)
+                await q.message.delete()
+            except Exception as e: await em(f"❌ فشل الرفع: {str(e)[:80]}")
+        else:
+            await em("❌ فشل التحميل.\n• الفيديو محمي؟ جرب إضافة cookies.txt\n• جرب جودة أقل")
+        if tmp: shutil.rmtree(tmp, ignore_errors=True)
         return
 
-    # ── لعبة إكس أو ──
-    if data.startswith("ttt_"):
-        parts = data.split('_')
+    # إكس أو
+    if d.startswith("ttt_"):
+        parts = d.split('_')
+        if len(parts)<2: return await q.answer()
 
-        if parts[1] == 'noop':
-            return await query.answer("هذه الخلية مشغولة! ❌")
+        if parts[1]=='noop': return await q.answer("الخلية مشغولة! ❌")
 
-        if parts[1] == 'reset' and len(parts) >= 3:
-            game_id = parts[2]
-            context.bot_data[f'ttt_{game_id}'] = {
-                'board': [''] * 9, 'turn': 'X',
-                'players': {'X': None, 'O': None}, 'mode': 'bot'
-            }
-            kb = ttt_render_board([''] * 9, game_id)
-            await query.answer("لعبة جديدة! 🎮")
-            await query.edit_message_text(
-                "🎮 <b>إكس أو — لعبة جديدة!</b>\n\nاضغط أي خلية للبدء ❌",
-                parse_mode="HTML", reply_markup=kb
-            )
-            return
+        # ضد البوت
+        if parts[1]=='vsbot' and len(parts)>=3:
+            gid=parts[2]; game=ctx.bot_data.get(f'ttt_{gid}')
+            if not game: return await q.answer("اللعبة انتهت!")
+            if q.from_user.id != game['players']['X']:
+                return await q.answer("مو أنت اللي بدأ!", show_alert=True)
+            game['mode']='bot'
+            await q.answer(); await q.edit_message_text(
+                f"🎮 <b>إكس أو</b>\n👤 {q.from_user.first_name} ❌ vs 🤖 البوت ⭕\n\nدورك! اضغط خلية 👇",
+                parse_mode="HTML", reply_markup=ttt_kb(game['board'],gid)); return
 
-        if len(parts) < 3:
-            return await query.answer()
+        # ضد لاعع مفتوح
+        if parts[1]=='vspvp' and len(parts)>=3:
+            gid=parts[2]; game=ctx.bot_data.get(f'ttt_{gid}')
+            if not game: return await q.answer("اللعبة انتهت!")
+            if q.from_user.id != game['players']['X']:
+                return await q.answer("مو أنت اللي بدأ!", show_alert=True)
+            game['mode']='pvp_open'
+            await q.answer(); await q.edit_message_text(
+                f"🎮 <b>إكس أو</b>\n❌ {q.from_user.first_name} ينتظر خصم!\n\nاضغط للانضمام 👇",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🙋 انضم كـ ⭕",callback_data=f"ttt_join_{gid}")]])); return
 
-        game_id = parts[1]
-        try:
-            cell = int(parts[2])
-        except:
-            return await query.answer()
+        # انضمام / قبول تحدي
+        if parts[1]=='join' and len(parts)>=3:
+            gid=parts[2]; game=ctx.bot_data.get(f'ttt_{gid}')
+            if not game: return await q.answer("اللعبة انتهت!", show_alert=True)
+            jid=q.from_user.id; mode=game.get('mode')
+            if mode=='pvp_pending':
+                if jid!=game['players']['O']: return await q.answer("التحدي مو إلك! 😅",show_alert=True)
+                game['mode']='pvp'
+            elif mode=='pvp_open':
+                if jid==game['players']['X']: return await q.answer("ما تلعب ضد نفسك! 😂",show_alert=True)
+                game['players']['O']=jid; game['mode']='pvp'
+            else: return await q.answer("اللعبة بدأت بالفعل!",show_alert=True)
+            try:
+                xm=await ctx.bot.get_chat_member(q.message.chat_id,game['players']['X'])
+                xn=xm.user.first_name
+            except: xn="اللاعع الأول"
+            await q.answer("✅ قبلت التحدي! ابدأوا!")
+            await q.edit_message_text(
+                f"🎮 <b>إكس أو PvP</b>\n❌ {xn} vs ⭕ {q.from_user.first_name}\n\nدور ❌ {xn}!",
+                parse_mode="HTML", reply_markup=ttt_kb(game['board'],gid)); return
 
-        game = context.bot_data.get(f'ttt_{game_id}')
-        if not game:
-            return await query.answer("اللعبة انتهت، ابدأ لعبة جديدة! 🎮", show_alert=True)
+        # رفض
+        if parts[1]=='reject' and len(parts)>=3:
+            gid=parts[2]; game=ctx.bot_data.get(f'ttt_{gid}')
+            if game:
+                if q.from_user.id!=game['players'].get('O'):
+                    return await q.answer("مو إلك ترفض!",show_alert=True)
+                ctx.bot_data.pop(f'ttt_{gid}',None)
+            await q.answer("رفضت التحدي!")
+            await q.edit_message_text(f"❌ {q.from_user.first_name} رفض التحدي! 😅"); return
 
-        player_id = query.from_user.id
-        # تعيين اللاعب الأول
-        if game['players']['X'] is None:
-            game['players']['X'] = player_id
+        # إعادة
+        if parts[1]=='reset' and len(parts)>=3:
+            gid=parts[2]
+            ctx.bot_data[f'ttt_{gid}']={'board':['']* 9,'turn':'X','players':{'X':None,'O':None},'mode':'bot'}
+            await q.answer("لعبة جديدة! 🎮")
+            await q.edit_message_text("🎮 <b>إكس أو — جديدة!</b>\n\nاضغط أي خلية ❌",
+                parse_mode="HTML",reply_markup=ttt_kb(['']*9,gid)); return
 
-        current_sym = game['turn']
-        if game['players'].get(current_sym) != player_id:
-            sym_txt = '❌' if current_sym == 'X' else '⭕'
-            return await query.answer(f"مو دورك! دور {sym_txt}", show_alert=True)
+        if len(parts)<3: return await q.answer()
+        gid=parts[1]
+        try: cell=int(parts[2])
+        except: return await q.answer()
+        game=ctx.bot_data.get(f'ttt_{gid}')
+        if not game: return await q.answer("اللعبة انتهت! ابدأ جديدة 🎮",show_alert=True)
 
-        if game['board'][cell] != '':
-            return await query.answer("هذه الخلية مشغولة!", show_alert=True)
+        pid=q.from_user.id
+        if game['players'].get('X') is None: game['players']['X']=pid
+        cur=game['turn']
+        exp=game['players'].get(cur)
+        if exp and exp!=pid: return await q.answer(f"مو دورك! دور {'❌' if cur=='X' else '⭕'}",show_alert=True)
+        if game.get('mode')=='pvp' and pid not in [game['players'].get('X'),game['players'].get('O')]:
+            return await q.answer("أنت مو من هاللعبة! 😅",show_alert=True)
+        if game['board'][cell]!='': return await q.answer("الخلية مشغولة!",show_alert=True)
 
-        game['board'][cell] = current_sym
-        winner = check_ttt_winner(game['board'])
-
-        if winner:
-            kb = ttt_render_board(game['board'], game_id)
-            sym = '❌' if winner == 'X' else '⭕'
-            name = query.from_user.first_name
-            await query.answer(f"🏆 {sym} فاز!", show_alert=False)
-            await query.edit_message_text(
-                f"🎮 <b>إكس أو</b>\n\n🏆 فاز {sym} <b>{name}</b>! مبروك!",
-                parse_mode="HTML", reply_markup=kb
-            )
-            context.bot_data.pop(f'ttt_{game_id}', None)
-            return
-
+        game['board'][cell]=cur
+        w=ttt_winner(game['board'])
+        if w:
+            sym='❌' if w=='X' else '⭕'
+            await q.answer(f"🏆 {sym} فاز!"); 
+            await q.edit_message_text(f"🎮 <b>إكس أو</b>\n\n🏆 فاز {sym} <b>{q.from_user.first_name}</b>! 🎉",
+                parse_mode="HTML",reply_markup=ttt_kb(game['board'],gid))
+            ctx.bot_data.pop(f'ttt_{gid}',None); return
         if '' not in game['board']:
-            kb = ttt_render_board(game['board'], game_id)
-            await query.answer("تعادل! 🤝")
-            await query.edit_message_text(
-                "🎮 <b>إكس أو</b>\n\n🤝 تعادل! ما فاز أحد.",
-                parse_mode="HTML", reply_markup=kb
-            )
-            context.bot_data.pop(f'ttt_{game_id}', None)
-            return
+            await q.answer("تعادل! 🤝")
+            await q.edit_message_text("🎮 <b>إكس أو</b>\n\n🤝 تعادل!",parse_mode="HTML",reply_markup=ttt_kb(game['board'],gid))
+            ctx.bot_data.pop(f'ttt_{gid}',None); return
 
-        game['turn'] = 'O' if current_sym == 'X' else 'X'
-
-        # دور البوت (O)
-        if game.get('mode') == 'bot' and game['turn'] == 'O':
-            await asyncio.sleep(0.5)
-            move = ttt_bot_move(game['board'])
-            if move is not None:
-                game['board'][move] = 'O'
-                winner = check_ttt_winner(game['board'])
-                if winner:
-                    kb = ttt_render_board(game['board'], game_id)
-                    await query.answer("البوت فاز! 🤖")
-                    await query.edit_message_text(
-                        "🎮 <b>إكس أو</b>\n\n🤖 البوت فاز! ⭕ حاول مرة ثانية!",
-                        parse_mode="HTML", reply_markup=kb
-                    )
-                    context.bot_data.pop(f'ttt_{game_id}', None)
-                    return
+        game['turn']='O' if cur=='X' else 'X'
+        if game.get('mode')=='bot' and game['turn']=='O':
+            await asyncio.sleep(0.6)
+            mv=ttt_bot(game['board'])
+            if mv is not None:
+                game['board'][mv]='O'
+                w=ttt_winner(game['board'])
+                if w:
+                    await q.answer("البوت فاز! 🤖")
+                    await q.edit_message_text("🎮 <b>إكس أو</b>\n\n🤖 البوت فاز ⭕! حاول ثاني!",
+                        parse_mode="HTML",reply_markup=ttt_kb(game['board'],gid))
+                    ctx.bot_data.pop(f'ttt_{gid}',None); return
                 if '' not in game['board']:
-                    kb = ttt_render_board(game['board'], game_id)
-                    await query.answer("تعادل! 🤝")
-                    await query.edit_message_text(
-                        "🎮 <b>إكس أو</b>\n\n🤝 تعادل!",
-                        parse_mode="HTML", reply_markup=kb
-                    )
-                    context.bot_data.pop(f'ttt_{game_id}', None)
-                    return
-            game['turn'] = 'X'
-
-        kb = ttt_render_board(game['board'], game_id)
-        await query.answer()
-        try:
-            await query.edit_message_reply_markup(kb)
-        except:
-            pass
+                    await q.answer("تعادل! 🤝")
+                    await q.edit_message_text("🎮 إكس أو\n\n🤝 تعادل!",reply_markup=ttt_kb(game['board'],gid))
+                    ctx.bot_data.pop(f'ttt_{gid}',None); return
+            game['turn']='X'
+        await q.answer()
+        try: await q.edit_message_reply_markup(ttt_kb(game['board'],gid))
+        except: pass
         return
-
 
 # ═══════════════════════════════════════════════════════════════════
 # 10. معالجات متنوعة
 # ═══════════════════════════════════════════════════════════════════
-async def track_messages_handler(update, context):
-    if not update.message or not update.message.text or update.message.text.startswith('/'):
-        return
-    db_set(f"messages/{update.message.chat.id}/{update.message.message_id}",
-           {"text": update.message.text})
-
-
-async def edited_message_handler(update, context):
-    if not update.edited_message:
-        return
-    chat_id = update.edited_message.chat.id
-    msg_id = update.edited_message.message_id
-    if not get_settings(chat_id).get("edit_notify", True):
-        return
-    new_text = update.edited_message.text or "[ميديا/ملف]"
-    old_text = db_get(f"messages/{chat_id}/{msg_id}/text", "[غير متوفر]")
-    db_set(f"messages/{chat_id}/{msg_id}", {"text": new_text})
-    t = (
-        f"✏️ <b>إشعار تعديل رسالة</b>\n"
-        f"👤 <b>من:</b> {update.edited_message.from_user.first_name}\n"
-        f"❌ <b>قديم:</b> <code>{old_text[:200]}</code>\n"
-        f"✅ <b>جديد:</b> <code>{new_text[:200]}</code>"
-    )
-    await context.bot.send_message(chat_id, t, parse_mode="HTML")
-
-
-async def welcome_member(update, context):
-    for member in update.message.new_chat_members:
-        if member.is_bot:
-            continue
-        s = get_settings(update.message.chat.id)
-        if not s.get("welcome", True):
-            continue
-        name = f'<a href="tg://user?id={member.id}">{member.first_name}</a>'
-        text = (
-            f"👋 أهلاً وسهلاً {name} في المجموعة! 🎉\n"
-            f"نتمنى لك وقتاً ممتعاً معنا 😊"
-        )
+async def welcome_handler(upd, ctx):
+    for m in upd.message.new_chat_members:
+        if m.is_bot: continue
+        s=get_settings(upd.message.chat.id)
+        if not s.get("welcome",True): continue
+        name=f'<a href="tg://user?id={m.id}">{m.first_name}</a>'
+        txt=f"👋 أهلاً {name} في المجموعة! 🎉\nنتمنى لك وقتاً ممتعاً 😊"
         try:
-            photos = await context.bot.get_user_profile_photos(member.id, limit=1)
-            if photos.total_count > 0:
-                await context.bot.send_photo(update.message.chat.id,
-                                             photos.photos[0][-1].file_id,
-                                             caption=text, parse_mode="HTML")
-            else:
-                await update.message.reply_text(text, parse_mode="HTML")
-        except:
-            await update.message.reply_text(text, parse_mode="HTML")
+            p=await ctx.bot.get_user_profile_photos(m.id,limit=1)
+            if p.total_count>0: await ctx.bot.send_photo(upd.message.chat.id,p.photos[0][-1].file_id,caption=txt,parse_mode="HTML")
+            else: await upd.message.reply_text(txt,parse_mode="HTML")
+        except: await upd.message.reply_text(txt,parse_mode="HTML")
 
+async def edit_handler(upd, ctx):
+    if not upd.edited_message: return
+    cid,mid=upd.edited_message.chat.id,upd.edited_message.message_id
+    if not get_settings(cid).get("edit_notify",True): return
+    new=upd.edited_message.text or "[ميديا]"
+    old=db_get(f"messages/{cid}/{mid}/text","[غير متوفر]")
+    db_set(f"messages/{cid}/{mid}",{"text":new})
+    await ctx.bot.send_message(cid,
+        f"✏️ <b>تعديل رسالة</b>\n👤 {upd.edited_message.from_user.first_name}\n❌ <code>{old[:200]}</code>\n✅ <code>{new[:200]}</code>",
+        parse_mode="HTML")
 
-async def media_filter_handler(update, context):
-    """منع أنواع الميديا المحظورة"""
-    msg = update.message
-    if not msg:
-        return
-    chat_id = msg.chat_id
-    settings = get_settings(chat_id)
-
-    should_delete = (
-        (msg.sticker and settings.get("ban_stickers")) or
-        (msg.animation and settings.get("ban_gifs")) or
-        (msg.video and settings.get("ban_videos")) or
-        (msg.photo and settings.get("ban_photos"))
-    )
-
-    if should_delete:
-        type_names = []
-        if msg.sticker and settings.get("ban_stickers"):
-            type_names.append("الملصقات")
-        if msg.animation and settings.get("ban_gifs"):
-            type_names.append("الـ GIF")
-        if msg.video and settings.get("ban_videos"):
-            type_names.append("المقاطع")
-        if msg.photo and settings.get("ban_photos"):
-            type_names.append("الصور")
-
+async def media_filter(upd, ctx):
+    msg=upd.message
+    if not msg: return
+    s=get_settings(msg.chat_id)
+    reason=None
+    if msg.sticker and s.get("ban_stickers"): reason="الملصقات"
+    elif msg.animation and s.get("ban_gifs"): reason="الـ GIF"
+    elif msg.video and s.get("ban_videos"): reason="المقاطع"
+    elif msg.photo and s.get("ban_photos"): reason="الصور"
+    if reason:
+        try: await msg.delete()
+        except: pass
         try:
-            await msg.delete()
-            nm = await context.bot.send_message(
-                chat_id,
-                f"🚫 {msg.from_user.first_name}، إرسال {' و'.join(type_names)} ممنوع هنا!"
-            )
-            await asyncio.sleep(4)
-            await nm.delete()
-        except:
-            pass
+            nm=await ctx.bot.send_message(msg.chat_id,f"🚫 {msg.from_user.first_name}، إرسال {reason} ممنوع هنا!")
+            await asyncio.sleep(4); await nm.delete()
+        except: pass
 
+async def track_msg(upd, ctx):
+    if not upd.message or not upd.message.text or upd.message.text.startswith('/'): return
+    db_set(f"messages/{upd.message.chat.id}/{upd.message.message_id}",{"text":upd.message.text})
 
 # ═══════════════════════════════════════════════════════════════════
-# 11. المعالج الرئيسي للرسائل
+# 11. المعالج الرئيسي
 # ═══════════════════════════════════════════════════════════════════
-async def handle_message(update, context):
-    if not update.message:
-        return
-    msg = update.message
-    text = (msg.text or "").strip()
-    chat_id = msg.chat_id
-    user_id = msg.from_user.id
+async def handle_msg(upd, ctx):
+    if not upd.message: return
+    msg=upd.message; text=(msg.text or "").strip()
+    cid=msg.chat_id; uid=msg.from_user.id
+    if not text: return
 
-    if not text:
-        return
+    # ══ خاص ══
+    if msg.chat.type=='private':
+        if ctx.user_data.get('wt'):
+            # همسة بالخاص
+            tid=ctx.user_data.pop('wt'); wc=ctx.user_data.pop('wc',None)
+            wid=str(random.randint(100000,999999))
+            db_set(f"whispers/{wid}",{'text':text,'sender':uid,'target':tid})
+            markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔒 اقرأ الهمسة",callback_data=f"show_w_{wid}")]])
+            try:
+                m=await ctx.bot.get_chat_member(wc,tid); tn=m.user.first_name
+            except: tn="العضو"
+            await ctx.bot.send_message(wc,
+                f"🤫 *همسة سرية!*\n👤 من: {msg.from_user.first_name}\n📨 إلى: {tn}\n\n_فقط المستهدف يقدر يقرأها_ 👇",
+                reply_markup=markup,parse_mode="Markdown")
+            await msg.reply_text("✅ أُرسلت الهمسة بنجاح! 🎉"); return
 
-    # ══ الخاص ══
-    if msg.chat.type == 'private':
-        if 'whisper_target' in context.user_data:
-            await handle_private_whisper(update, context)
-            return
-        # روابط التحميل
-        if re.search(r'(youtube\.com|youtu\.be|shorts)', text, re.I):
-            await handle_youtube_link(update, context, text, user_id)
-            return
-        if re.search(r'(x\.com|twitter\.com)', text, re.I):
-            await handle_twitter_link(update, context, text, chat_id)
-            return
-        if re.search(r'(tiktok\.com|vm\.tiktok\.com|douyin\.com)', text, re.I):
-            await handle_tiktok_link(update, context, text, chat_id, msg.message_id)
-            return
-        if re.search(r'(facebook\.com|fb\.watch|fb\.com)', text, re.I):
-            await handle_facebook_link(update, context, text, chat_id)
-            return
-        if re.search(r'instagram\.com', text, re.I):
-            await handle_instagram_link(update, context, text, chat_id)
-            return
-        # ذكاء اصطناعي حر
+        # روابط بالخاص
+        if re.search(r'(youtube\.com|youtu\.be|shorts)',text,re.I): await yt_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
+        if re.search(r'(x\.com|twitter\.com)',text,re.I): await x_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
+        if re.search(r'(tiktok\.com|vm\.tiktok\.com|douyin\.com)',text,re.I): await tiktok_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid,msg.message_id); return
+        if re.search(r'(facebook\.com|fb\.watch|fb\.com)',text,re.I): await fb_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
+        m=re.match(r'^ستوري\s+@?(\S+)',text,re.I)
+        if m: await insta_stories_handler(upd,ctx,m.group(1),cid); return
+        if re.search(r'instagram\.com',text,re.I): await insta_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid); return
+
         if not text.startswith('/'):
-            await context.bot.send_chat_action(chat_id, 'typing')
-            reply = await ask_deepseek(text)
-            await msg.reply_text(reply)
+            await ctx.bot.send_chat_action(cid,'typing')
+            await msg.reply_text(await ask_ai(text))
         return
 
-    # ══ الكروبات ══
-    settings = get_settings(chat_id)
-    priv_owner = await is_privileged(update, context, ROLE_OWNER)
-    priv_manager = await is_privileged(update, context, ROLE_MANAGER)
+    # ══ كروب ══
+    s=get_settings(cid)
+    priv_own=await is_priv(upd,ctx,ROLE_OWNER)
+    priv_mgr=await is_priv(upd,ctx,ROLE_MGR)
 
-    # ── الردود التلقائية ──
-    auto_replies = db_get(f"auto_replies/{chat_id}", {})
-    if auto_replies and isinstance(auto_replies, dict):
-        for trigger, reply_text in auto_replies.items():
-            if trigger and reply_text and trigger.lower() in text.lower():
-                await msg.reply_text(reply_text)
-                return
+    # ردود تلقائية
+    for tr,rp in get_replies(cid):
+        if tr.lower() in text.lower(): await msg.reply_text(rp); return
 
-    # ── الكلمات الممنوعة ──
-    banned_words = settings.get("banned_words", [])
-    if banned_words:
-        for word in banned_words:
-            if word and word.lower() in text.lower():
-                try:
-                    await msg.delete()
-                except:
-                    pass
-                try:
-                    nm = await context.bot.send_message(
-                        chat_id,
-                        f"⚠️ {msg.from_user.first_name}، رسالتك تحتوي على كلمة ممنوعة وتم حذفها."
-                    )
-                    await asyncio.sleep(4)
-                    await nm.delete()
-                except:
-                    pass
-                return
+    # كلمات ممنوعة
+    for w in s.get("banned_words",[]):
+        if w and w.lower() in text.lower():
+            try: await msg.delete()
+            except: pass
+            try:
+                nm=await ctx.bot.send_message(cid,f"⚠️ {msg.from_user.first_name}، الرسالة تحتوي كلمة ممنوعة.")
+                await asyncio.sleep(4); await nm.delete()
+            except: pass
+            return
 
-    # ══════════════════════════════
-    # الأوامر العامة
-    # ══════════════════════════════
-    if text == "الاوامر":
-        return await msg.reply_text(TEXT_MAIN_MENU, parse_mode="HTML",
-                                    reply_markup=get_main_keyboard())
+    # ══ أوامر عامة ══
+    if text=="الاوامر": return await msg.reply_text(TEXT_MAIN,parse_mode="HTML",reply_markup=mk_main())
 
-    if text == "نسبة الحب" and msg.reply_to_message:
-        pct = random.randint(0, 100)
-        bar = "💖" * (pct // 20) + "🤍" * (5 - pct // 20)
-        return await msg.reply_text(
-            f"💘 نسبة الحب بين\n"
-            f"<b>{msg.from_user.first_name}</b> و <b>{msg.reply_to_message.from_user.first_name}</b>:\n\n"
-            f"{bar}\n"
-            f"<b>{pct}%</b>",
-            parse_mode="HTML"
-        )
+    if text=="نسبة الحب" and msg.reply_to_message:
+        p=random.randint(0,100)
+        bar="💖"*(p//20)+"🤍"*(5-p//20)
+        return await msg.reply_text(f"💘 {msg.from_user.first_name} & {msg.reply_to_message.from_user.first_name}\n{bar} <b>{p}%</b>",parse_mode="HTML")
 
-    if text == "وعد":
-        return await msg.reply_text(random.choice(WA3ED_LIST))
+    if text=="وعد": return await msg.reply_text(random.choice(WA3ED_LIST))
+    if text=="لو خيروك": return await msg.reply_text(random.choice(KHAYROK_LIST))
+    if text=="نكتة": return await msg.reply_text(random.choice(JOKES_LIST))
+    if text=="نرد": return await msg.reply_text(f"🎲 طاح: <b>{random.randint(1,6)}</b>",parse_mode="HTML")
+    if text=="عملة": return await msg.reply_text("🪙 " + random.choice(["صورة! 👑","كتابة! 📝"]))
 
-    if text == "لو خيروك":
-        return await msg.reply_text(random.choice(KHAYROK_LIST))
+    if text.startswith("ترجمة "):
+        src=text[6:].strip()
+        if src:
+            await ctx.bot.send_chat_action(cid,'typing')
+            def _tr():
+                r=requests.get(f"https://api.mymemory.translated.net/get",params={"q":src,"langpair":"autodetect|ar"},timeout=10)
+                return r.json().get("responseData",{}).get("translatedText","فشلت الترجمة")
+            result=await asyncio.get_running_loop().run_in_executor(None,_tr)
+            return await msg.reply_text(f"🌐 <b>الترجمة:</b>\n{result}",parse_mode="HTML")
 
-    if text == "نكتة":
-        return await msg.reply_text(random.choice(JOKES_LIST))
+    if text.startswith("حساب "):
+        expr=text[5:].strip()
+        try:
+            allowed=set('0123456789+-*/.() %')
+            if all(c in allowed or c.isspace() for c in expr):
+                res=eval(expr,{"__builtins__":{}},{"sqrt":math.sqrt,"pi":math.pi})
+                return await msg.reply_text(f"🔢 <code>{expr}</code> = <b>{res}</b>",parse_mode="HTML")
+            else: return await msg.reply_text("❗ أرقام وعمليات فقط (+، -، *، /، ^)")
+        except: return await msg.reply_text("❌ معادلة غلط. مثال: <code>حساب 15 * 3 + 7</code>",parse_mode="HTML")
 
-    if text == "افتار":
-        target = msg.reply_to_message.from_user if msg.reply_to_message else msg.from_user
-        photos = await target.get_profile_photos(limit=1)
-        if photos and photos.total_count > 0:
-            return await msg.reply_photo(photos.photos[0][-1].file_id,
-                                         caption=f"🖼 افتار {target.first_name}")
-        return await msg.reply_text("هذا العضو ما حاط صورة بروفايل! 😅")
+    if text=="افتار":
+        t=msg.reply_to_message.from_user if msg.reply_to_message else msg.from_user
+        p=await t.get_profile_photos(limit=1)
+        if p and p.total_count>0: return await msg.reply_photo(p.photos[0][-1].file_id,caption=f"🖼 افتار {t.first_name}")
+        return await msg.reply_text("ما حاط صورة بروفايل! 😅")
 
-    if text == "ايدي":
-        target = msg.reply_to_message.from_user if msg.reply_to_message else msg.from_user
-        lang = target.language_code or 'unknown'
-        lang_display = LANG_TO_FLAG.get(lang, f'🌐 {lang}')
-        username = f"@{target.username}" if target.username else "لا يوجد"
-        full_name = f"{target.first_name} {target.last_name or ''}".strip()
-        premium = "💎 نعم" if getattr(target, 'is_premium', False) else "❌ لا"
-        account_type = "🤖 بوت" if target.is_bot else "👤 مستخدم"
+    if text=="ايدي":
+        t=msg.reply_to_message.from_user if msg.reply_to_message else msg.from_user
+        lang=t.language_code or '?'
+        flag=LANG_FLAG.get(lang,'🌐')
         return await msg.reply_text(
             f"📋 <b>معلومات العضو</b>\n\n"
-            f"👤 <b>الاسم:</b> {full_name}\n"
-            f"🆔 <b>الآيدي:</b> <code>{target.id}</code>\n"
-            f"📛 <b>اليوزرنيم:</b> {username}\n"
-            f"🌐 <b>اللغة:</b> {lang_display}\n"
-            f"💎 <b>بريميوم:</b> {premium}\n"
-            f"🔖 <b>النوع:</b> {account_type}",
-            parse_mode="HTML"
-        )
+            f"👤 <b>الاسم:</b> {t.first_name} {t.last_name or ''}\n"
+            f"🆔 <b>ID:</b> <code>{t.id}</code>\n"
+            f"📛 <b>يوزر:</b> {'@'+t.username if t.username else 'لا يوجد'}\n"
+            f"🌐 <b>اللغة:</b> {flag} {lang}\n"
+            f"💎 <b>بريميوم:</b> {'✅' if getattr(t,'is_premium',False) else '❌'}\n"
+            f"🔖 <b>النوع:</b> {'🤖 بوت' if t.is_bot else '👤 مستخدم'}",
+            parse_mode="HTML")
 
-    if text == "همسة" and msg.reply_to_message:
-        target = msg.reply_to_message.from_user
-        if target.is_bot:
-            return await msg.reply_text("ما تكدر تهمس لبوت يا ذكي! 😂")
-        bot_username = context.bot.username
-        deep_link = f"t.me/{bot_username}?start=w_{user_id}_{target.id}_{str(chat_id).replace('-', 'm')}"
-        markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔒 اضغط هنا واكتب الهمسة", url=deep_link)
-        ]])
-        return await msg.reply_text(
-            f"يا {msg.from_user.first_name}، اضغط الزر واكتب همستك بالخاص 🤫",
-            reply_markup=markup
-        )
+    if text=="همسة" and msg.reply_to_message:
+        t=msg.reply_to_message.from_user
+        if t.is_bot: return await msg.reply_text("ما تهمس لبوت! 😂")
+        link=f"t.me/{ctx.bot.username}?start=w_{uid}_{t.id}_{str(cid).replace('-','m')}"
+        return await msg.reply_text(f"يا {msg.from_user.first_name}، اضغط واكتب همستك 🤫",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔒 اكتب الهمسة",url=link)]]))
 
-    if text == "تحويل":
-        target_msg = msg.reply_to_message
-        if not target_msg:
-            return await msg.reply_text("❗ رد على مقطع فيديو أو ملف لتحويله لصوت.")
-        media = target_msg.video or target_msg.document
-        if not media:
-            return await msg.reply_text("❗ رد على مقطع فيديو أو ملف صالح.")
-        wait = await msg.reply_text("🔄 جاري استخراج الصوت...")
+    if text=="تحويل":
+        rm=msg.reply_to_message
+        if not rm: return await msg.reply_text("❗ رد على مقطع فيديو.")
+        media=rm.video or rm.document
+        if not media: return await msg.reply_text("❗ رد على فيديو أو ملف.")
+        wm=await msg.reply_text("🔄 جاري استخراج الصوت...")
         try:
-            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-            tg_file = await media.get_file()
-            in_p = f"/tmp/vin_{msg.message_id}.mp4"
-            out_p = f"/tmp/aout_{msg.message_id}.mp3"
-            await tg_file.download_to_drive(custom_path=in_p)
-            subprocess.run(
-                [ffmpeg_exe, "-i", in_p, "-q:a", "0", "-map", "a", out_p, "-y"],
-                capture_output=True, timeout=180
-            )
-            if os.path.exists(out_p):
-                file_name = getattr(media, 'file_name', None) or f"audio_{msg.message_id}"
-                title = file_name.rsplit('.', 1)[0] if '.' in file_name else file_name
-                with open(out_p, 'rb') as audio:
-                    await msg.reply_audio(audio, title=title, performer="Bot 🎵")
-                await wait.delete()
-            else:
-                await wait.edit_text("❌ فشل استخراج الصوت. تأكد أن الملف يحتوي على مقطع صوتي.")
-        except subprocess.TimeoutExpired:
-            await wait.edit_text("❌ الملف كبير جداً، تجاوز الوقت المسموح.")
-        except Exception as e:
-            logger.error(f"Conversion error: {e}")
-            await wait.edit_text(f"❌ <b>فشل التحويل!</b>\n<code>{str(e)[:200]}</code>",
-                                 parse_mode="HTML")
+            tf=await media.get_file()
+            inp=f"/tmp/vi_{msg.message_id}.mp4"; out=f"/tmp/ao_{msg.message_id}.mp3"
+            await tf.download_to_drive(custom_path=inp)
+            subprocess.run([FFMPEG,"-i",inp,"-q:a","0","-map","a",out,"-y"],capture_output=True,timeout=180)
+            if os.path.exists(out):
+                fn=getattr(media,'file_name',None) or f"audio_{msg.message_id}"
+                with open(out,'rb') as a: await msg.reply_audio(a,title=fn.rsplit('.',1)[0])
+                await wm.delete()
+            else: await wm.edit_text("❌ الملف ما يحتوي صوت.")
+        except subprocess.TimeoutExpired: await wm.edit_text("❌ الملف كبير جداً.")
+        except Exception as e: await wm.edit_text(f"❌ فشل: {str(e)[:100]}")
         finally:
-            for p in [in_p, out_p]:
-                if os.path.exists(p):
-                    try:
-                        os.remove(p)
-                    except:
-                        pass
+            for p in [inp,out]:
+                if os.path.exists(p): os.remove(p)
         return
 
-    # لعبة إكس أو
-    if text in ("اكس او", "اكسو", "لعبة", "إكس أو"):
-        game_id = str(random.randint(10000, 99999))
-        context.bot_data[f'ttt_{game_id}'] = {
-            'board': [''] * 9,
-            'turn': 'X',
-            'players': {'X': user_id, 'O': None},
-            'mode': 'bot',
-        }
-        kb = ttt_render_board([''] * 9, game_id)
-        return await msg.reply_text(
-            f"🎮 <b>إكس أو</b>\n"
-            f"👤 {msg.from_user.first_name} vs 🤖 البوت\n\n"
-            f"دورك ❌ اضغط أي خلية!",
-            parse_mode="HTML", reply_markup=kb
-        )
+    # إكس أو
+    if text in ("اكس او","اكسو","لعبة","إكس أو"):
+        gid=str(random.randint(10000,99999))
+        challenged=None
+        if msg.reply_to_message and not msg.reply_to_message.from_user.is_bot:
+            challenged=msg.reply_to_message.from_user
+        elif msg.entities:
+            for e in msg.entities:
+                if e.type=="text_mention" and e.user and not e.user.is_bot:
+                    challenged=e.user; break
+        if challenged and challenged.id!=uid:
+            ctx.bot_data[f'ttt_{gid}']={'board':['']*9,'turn':'X','players':{'X':uid,'O':challenged.id},'mode':'pvp_pending'}
+            return await msg.reply_text(
+                f"⚔️ <b>تحدي إكس أو!</b>\n❌ {msg.from_user.first_name} يتحدى ⭕ {challenged.first_name}!\n\nهل تقبل؟ 🤔",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ قبول",callback_data=f"ttt_join_{gid}"),
+                    InlineKeyboardButton("❌ رفض",callback_data=f"ttt_reject_{gid}")
+                ]]))
+        else:
+            ctx.bot_data[f'ttt_{gid}']={'board':['']*9,'turn':'X','players':{'X':uid,'O':None},'mode':'selecting'}
+            return await msg.reply_text(
+                f"🎮 <b>إكس أو</b> — {msg.from_user.first_name}\nاختار طريقة اللعب:",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🤖 ضد البوت",callback_data=f"ttt_vsbot_{gid}"),
+                    InlineKeyboardButton("👥 ضد لاعع",callback_data=f"ttt_vspvp_{gid}")
+                ]]))
 
-    # نظام الزواج
-    if text == "زواج" and msg.reply_to_message:
-        target = msg.reply_to_message.from_user
-        if target.is_bot or target.id == user_id:
-            return await msg.reply_text("ما ينفع هذا الاختيار! 😅")
-        existing = db_get(f"marriages/{chat_id}/{user_id}", None)
-        if existing:
-            return await msg.reply_text("أنت بالفعل متزوج! اكتب 'طلاق' أولاً. 💍")
-        db_set(f"marriages/{chat_id}/{user_id}", target.id)
-        db_set(f"marriages/{chat_id}/{target.id}", user_id)
-        return await msg.reply_text(
-            f"💍 تم الزواج بين <b>{msg.from_user.first_name}</b> و <b>{target.first_name}</b>!\n"
-            f"مبروك عليكم! 🎊🎉",
-            parse_mode="HTML"
-        )
-
-    if text == "طلاق":
-        partner_id = db_get(f"marriages/{chat_id}/{user_id}", None)
-        if not partner_id:
-            return await msg.reply_text("أنت مو متزوج أصلاً! 😅")
-        db_set(f"marriages/{chat_id}/{user_id}", None)
-        db_set(f"marriages/{chat_id}/{partner_id}", None)
-        return await msg.reply_text(
-            f"💔 تم الطلاق. {msg.from_user.first_name} أصبح حراً.\n"
-            f"الحياة مستمرة! 🌹"
-        )
-
-    if text == "شريكي":
-        partner_id = db_get(f"marriages/{chat_id}/{user_id}", None)
-        if not partner_id:
-            return await msg.reply_text("ما عندك شريك/ة حالياً 😢\nاكتب 'زواج' بالرد على شخص!")
+    # زواج
+    if text=="زواج" and msg.reply_to_message:
+        t=msg.reply_to_message.from_user
+        if t.is_bot or t.id==uid: return await msg.reply_text("ما ينفع! 😅")
+        if db_get(f"marriages/{cid}/{uid}"): return await msg.reply_text("أنت متزوج! اكتب 'طلاق' أولاً.")
+        db_set(f"marriages/{cid}/{uid}",t.id); db_set(f"marriages/{cid}/{t.id}",uid)
+        return await msg.reply_text(f"💍 تم الزواج بين <b>{msg.from_user.first_name}</b> و <b>{t.first_name}</b>! 🎊",parse_mode="HTML")
+    if text=="طلاق":
+        pid=db_get(f"marriages/{cid}/{uid}")
+        if not pid: return await msg.reply_text("أنت مو متزوج! 😅")
+        db_set(f"marriages/{cid}/{uid}",None); db_set(f"marriages/{cid}/{pid}",None)
+        return await msg.reply_text(f"💔 تم الطلاق. {msg.from_user.first_name} أصبح حراً.")
+    if text=="شريكي":
+        pid=db_get(f"marriages/{cid}/{uid}")
+        if not pid: return await msg.reply_text("ما عندك شريك 😢")
         try:
-            m = await context.bot.get_chat_member(chat_id, partner_id)
-            return await msg.reply_text(
-                f"💑 شريكك هو/هي: <b>{m.user.first_name}</b>",
-                parse_mode="HTML"
-            )
-        except:
-            return await msg.reply_text("شريكك غادر المجموعة 😔")
+            m=await ctx.bot.get_chat_member(cid,pid)
+            return await msg.reply_text(f"💑 شريكك: <b>{m.user.first_name}</b>",parse_mode="HTML")
+        except: return await msg.reply_text("شريكك غادر المجموعة 😔")
 
-    # ══════════════════════════════
-    # الأوامر الإدارية (مدير أو أعلى)
-    # ══════════════════════════════
-    if priv_manager:
-
-        if text == "تحذير" and msg.reply_to_message:
-            tgt = msg.reply_to_message.from_user
-            warns = db_get(f"warns/{chat_id}/{tgt.id}", 0) + 1
-            db_set(f"warns/{chat_id}/{tgt.id}", warns)
-            if warns >= 3:
-                try:
-                    await context.bot.ban_chat_member(chat_id, tgt.id)
-                    return await msg.reply_text(
-                        f"🚫 <b>{tgt.first_name}</b> وصل للتحذير الثالث وتم حظره تلقائياً!",
-                        parse_mode="HTML"
-                    )
-                except:
-                    pass
-            return await msg.reply_text(
-                f"⚠️ تحذير <b>{warns}/3</b> لـ <b>{tgt.first_name}</b>.",
-                parse_mode="HTML"
-            )
-
-        if text == "الغاء تحذير" and msg.reply_to_message:
-            tgt = msg.reply_to_message.from_user
-            warns = max(0, db_get(f"warns/{chat_id}/{tgt.id}", 0) - 1)
-            db_set(f"warns/{chat_id}/{tgt.id}", warns)
-            return await msg.reply_text(
-                f"✅ تم إلغاء تحذير. <b>{tgt.first_name}</b> عنده الآن <b>{warns}/3</b>.",
-                parse_mode="HTML"
-            )
-
-        if text == "تحذيراتي":
-            warns = db_get(f"warns/{chat_id}/{user_id}", 0)
-            return await msg.reply_text(f"⚠️ تحذيراتك: <b>{warns}/3</b>", parse_mode="HTML")
-
-        if text == "قفل الشات":
+    # ══ إدارة (مدير+) ══
+    if priv_mgr:
+        if text=="تحذير" and msg.reply_to_message:
+            t=msg.reply_to_message.from_user
+            w=db_get(f"warns/{cid}/{t.id}",0)+1; db_set(f"warns/{cid}/{t.id}",w)
+            if w>=3:
+                try: await ctx.bot.ban_chat_member(cid,t.id)
+                except: pass
+                return await msg.reply_text(f"🚫 <b>{t.first_name}</b> تحذير 3/3 — تم الحظر!",parse_mode="HTML")
+            return await msg.reply_text(f"⚠️ تحذير <b>{w}/3</b> لـ {t.first_name}",parse_mode="HTML")
+        if text=="الغاء تحذير" and msg.reply_to_message:
+            t=msg.reply_to_message.from_user
+            w=max(0,db_get(f"warns/{cid}/{t.id}",0)-1); db_set(f"warns/{cid}/{t.id}",w)
+            return await msg.reply_text(f"✅ تم إلغاء تحذير. {t.first_name}: {w}/3")
+        if text=="تحذيراتي":
+            return await msg.reply_text(f"⚠️ تحذيراتك: <b>{db_get(f'warns/{cid}/{uid}',0)}/3</b>",parse_mode="HTML")
+        if text=="قفل الشات":
             try:
-                await context.bot.set_chat_permissions(chat_id,
-                                                       ChatPermissions(can_send_messages=False))
-                settings["locked"] = True
-                save_settings(chat_id, settings)
-                return await msg.reply_text("🔒 تم قفل الشات. لا أحد يقدر يكتب الآن.")
-            except Exception as e:
-                return await msg.reply_text(f"❌ فشل القفل: {e}")
-
-        if text == "فتح الشات":
+                await ctx.bot.set_chat_permissions(cid,ChatPermissions(can_send_messages=False))
+                s["locked"]=True; save_settings(cid,s)
+                return await msg.reply_text("🔒 تم قفل الشات.")
+            except Exception as e: return await msg.reply_text(f"❌ {e}")
+        if text=="فتح الشات":
             try:
-                perms = ChatPermissions(
-                    can_send_messages=True, can_send_audios=True,
-                    can_send_documents=True, can_send_photos=True,
-                    can_send_videos=True, can_send_video_notes=True,
-                    can_send_voice_notes=True, can_send_polls=True,
-                    can_send_other_messages=True, can_add_web_page_previews=True
-                )
-                await context.bot.set_chat_permissions(chat_id, perms)
-                settings["locked"] = False
-                save_settings(chat_id, settings)
-                return await msg.reply_text("🔓 تم فتح الشات. الجميع يقدر يكتب!")
-            except Exception as e:
-                return await msg.reply_text(f"❌ فشل الفتح: {e}")
-
-        # منع/تفعيل أنواع الميديا
-        ban_map = {
-            "منع ملصقات": "ban_stickers", "منع قيف": "ban_gifs",
-            "منع مقاطع": "ban_videos", "منع صور": "ban_photos"
-        }
-        unban_map = {
-            "تفعيل ملصقات": "ban_stickers", "تفعيل قيف": "ban_gifs",
-            "تفعيل مقاطع": "ban_videos", "تفعيل صور": "ban_photos"
-        }
-        names = {"ban_stickers": "الملصقات", "ban_gifs": "الـ GIF",
-                 "ban_videos": "المقاطع", "ban_photos": "الصور"}
-
-        if text in ban_map:
-            key = ban_map[text]
-            settings[key] = True
-            save_settings(chat_id, settings)
-            return await msg.reply_text(f"🚫 تم تفعيل منع {names[key]}.")
-
-        if text in unban_map:
-            key = unban_map[text]
-            settings[key] = False
-            save_settings(chat_id, settings)
-            return await msg.reply_text(f"✅ تم رفع منع {names[key]}.")
-
-        if text == "الترحيب تشغيل":
-            settings["welcome"] = True
-            save_settings(chat_id, settings)
-            return await msg.reply_text("✅ تم تفعيل رسالة الترحيب.")
-
-        if text == "الترحيب ايقاف":
-            settings["welcome"] = False
-            save_settings(chat_id, settings)
-            return await msg.reply_text("✅ تم إيقاف رسالة الترحيب.")
-
-        if text == "تعديل تشغيل":
-            settings["edit_notify"] = True
-            save_settings(chat_id, settings)
-            return await msg.reply_text("✅ تم تفعيل إشعارات تعديل الرسائل.")
-
-        if text == "تعديل ايقاف":
-            settings["edit_notify"] = False
-            save_settings(chat_id, settings)
-            return await msg.reply_text("✅ تم إيقاف إشعارات تعديل الرسائل.")
-
+                perms=ChatPermissions(can_send_messages=True,can_send_audios=True,can_send_documents=True,
+                    can_send_photos=True,can_send_videos=True,can_send_video_notes=True,
+                    can_send_voice_notes=True,can_send_polls=True,can_send_other_messages=True,can_add_web_page_previews=True)
+                await ctx.bot.set_chat_permissions(cid,perms); s["locked"]=False; save_settings(cid,s)
+                return await msg.reply_text("🔓 تم فتح الشات.")
+            except Exception as e: return await msg.reply_text(f"❌ {e}")
+        BAN_MAP={"منع ملصقات":"ban_stickers","منع قيف":"ban_gifs","منع مقاطع":"ban_videos","منع صور":"ban_photos"}
+        UNB_MAP={"تفعيل ملصقات":"ban_stickers","تفعيل قيف":"ban_gifs","تفعيل مقاطع":"ban_videos","تفعيل صور":"ban_photos"}
+        NMS={"ban_stickers":"الملصقات","ban_gifs":"الـ GIF","ban_videos":"المقاطع","ban_photos":"الصور"}
+        if text in BAN_MAP:
+            k=BAN_MAP[text]; s[k]=True; save_settings(cid,s)
+            return await msg.reply_text(f"🚫 تم منع {NMS[k]}.")
+        if text in UNB_MAP:
+            k=UNB_MAP[text]; s[k]=False; save_settings(cid,s)
+            return await msg.reply_text(f"✅ تم تفعيل {NMS[k]}.")
+        if text=="الترحيب تشغيل": s["welcome"]=True; save_settings(cid,s); return await msg.reply_text("✅ الترحيب شغّال.")
+        if text=="الترحيب ايقاف": s["welcome"]=False; save_settings(cid,s); return await msg.reply_text("✅ الترحيب موقوف.")
+        if text=="تعديل تشغيل": s["edit_notify"]=True; save_settings(cid,s); return await msg.reply_text("✅ إشعار التعديل شغّال.")
+        if text=="تعديل ايقاف": s["edit_notify"]=False; save_settings(cid,s); return await msg.reply_text("✅ إشعار التعديل موقوف.")
         if text.startswith("منع كلمة "):
-            word = text[9:].strip()
-            if word:
-                words = settings.get("banned_words", [])
-                if word not in words:
-                    words.append(word)
-                settings["banned_words"] = words
-                save_settings(chat_id, settings)
-                return await msg.reply_text(
-                    f"✅ تمت إضافة الكلمة الممنوعة: <code>{word}</code>",
-                    parse_mode="HTML"
-                )
-
+            w=text[9:].strip()
+            if w:
+                ws=s.get("banned_words",[]); ws.append(w) if w not in ws else None
+                s["banned_words"]=ws; save_settings(cid,s)
+                return await msg.reply_text(f"✅ تمت إضافة: <code>{w}</code>",parse_mode="HTML")
         if text.startswith("حذف كلمة "):
-            word = text[9:].strip()
-            words = settings.get("banned_words", [])
-            if word in words:
-                words.remove(word)
-            settings["banned_words"] = words
-            save_settings(chat_id, settings)
-            return await msg.reply_text(
-                f"✅ تمت إزالة الكلمة: <code>{word}</code>",
-                parse_mode="HTML"
-            )
-
-        if text == "الكلمات":
-            words = settings.get("banned_words", [])
-            if words:
-                return await msg.reply_text(
-                    "📋 <b>الكلمات الممنوعة:</b>\n" +
-                    "\n".join(f"• <code>{w}</code>" for w in words),
-                    parse_mode="HTML"
-                )
-            return await msg.reply_text("لا توجد كلمات ممنوعة حالياً.")
-
+            w=text[9:].strip(); ws=s.get("banned_words",[])
+            if w in ws: ws.remove(w)
+            s["banned_words"]=ws; save_settings(cid,s)
+            return await msg.reply_text(f"✅ تمت إزالة: <code>{w}</code>",parse_mode="HTML")
+        if text=="الكلمات":
+            ws=s.get("banned_words",[])
+            return await msg.reply_text("📋 <b>الكلمات الممنوعة:</b>\n"+"\n".join(f"• <code>{w}</code>" for w in ws) if ws else "لا توجد كلمات ممنوعة.",parse_mode="HTML")
         if text.startswith("مسح "):
             try:
-                count = min(int(text[4:].strip()), 100)
-                start_id = (msg.reply_to_message.message_id
-                            if msg.reply_to_message else msg.message_id - 1)
-                deleted = 0
-                for mid in range(start_id, start_id + count + 1):
-                    try:
-                        await context.bot.delete_message(chat_id, mid)
-                        deleted += 1
-                    except:
-                        pass
-                try:
-                    await msg.delete()
-                except:
-                    pass
-                nm = await context.bot.send_message(chat_id, f"🗑 تم حذف {deleted} رسالة.")
-                await asyncio.sleep(3)
-                await nm.delete()
-            except ValueError:
-                await msg.reply_text("❗ مثال: <code>مسح 10</code> (مع الرد على أول رسالة)",
-                                     parse_mode="HTML")
+                count=min(int(text[4:].strip()),100)
+                start=msg.reply_to_message.message_id if msg.reply_to_message else msg.message_id-1
+                dl=0
+                for mid in range(start,start+count+1):
+                    try: await ctx.bot.delete_message(cid,mid); dl+=1
+                    except: pass
+                try: await msg.delete()
+                except: pass
+                nm=await ctx.bot.send_message(cid,f"🗑 تم حذف {dl} رسالة.")
+                await asyncio.sleep(3); await nm.delete()
+            except ValueError: await msg.reply_text("❗ مثال: <code>مسح 10</code>",parse_mode="HTML")
             return
-
-        # الردود التلقائية
         if text.startswith("اضافة رد ") and "|" in text:
-            after = text[9:]
-            parts = after.split("|", 1)
-            trigger_word = parts[0].strip()
-            reply_word = parts[1].strip()
-            if trigger_word and reply_word:
-                db_set(f"auto_replies/{chat_id}/{trigger_word}", reply_word)
-                return await msg.reply_text(
-                    f"✅ <b>تم إضافة الرد التلقائي:</b>\n"
-                    f"🔑 عند كتابة: <code>{trigger_word}</code>\n"
-                    f"💬 البوت يرد: {reply_word}",
-                    parse_mode="HTML"
-                )
-            return await msg.reply_text("❗ مثال: <code>اضافة رد السلام عليكم | وعليكم السلام</code>",
-                                        parse_mode="HTML")
-
+            p=text[9:].split("|",1)
+            tr,rp=p[0].strip(),p[1].strip()
+            if tr and rp:
+                store_reply(cid,tr,rp)
+                return await msg.reply_text(f"✅ <b>رد تلقائي:</b>\n<code>{tr}</code> ← {rp}",parse_mode="HTML")
+            return await msg.reply_text("❗ مثال: <code>اضافة رد السلام عليكم | وعليكم السلام</code>",parse_mode="HTML")
         if text.startswith("حذف رد "):
-            trigger_word = text[7:].strip()
-            db_set(f"auto_replies/{chat_id}/{trigger_word}", None)
-            return await msg.reply_text(
-                f"✅ تم حذف الرد التلقائي لـ: <code>{trigger_word}</code>",
-                parse_mode="HTML"
-            )
-
-        if text == "قائمة الردود":
-            replies = db_get(f"auto_replies/{chat_id}", {})
-            if replies and isinstance(replies, dict):
-                lines = [f"• <code>{k}</code> ← {v}"
-                         for k, v in replies.items() if k and v]
-                if lines:
-                    return await msg.reply_text(
-                        "📋 <b>الردود التلقائية:</b>\n" + "\n".join(lines),
-                        parse_mode="HTML"
-                    )
-            return await msg.reply_text("لا توجد ردود تلقائية حالياً.")
-
-        if text == "طرد":
-            tgt = await get_target_user(update, context)
-            if tgt:
-                await context.bot.ban_chat_member(chat_id, tgt.id)
-                await context.bot.unban_chat_member(chat_id, tgt.id)
-                await msg.reply_text(f"👢 تم طرد {tgt.first_name}.")
+            tr=text[7:].strip(); delete_reply(cid,tr)
+            return await msg.reply_text(f"✅ تم حذف رد: <code>{tr}</code>",parse_mode="HTML")
+        if text=="قائمة الردود":
+            rs=get_replies(cid)
+            return await msg.reply_text("📋 <b>الردود:</b>\n"+"\n".join(f"• <code>{t}</code> ← {r}" for t,r in rs) if rs else "لا توجد ردود.",parse_mode="HTML")
+        if text=="طرد":
+            t=await get_target(upd,ctx)
+            if t: await ctx.bot.ban_chat_member(cid,t.id); await ctx.bot.unban_chat_member(cid,t.id); await msg.reply_text(f"👢 تم طرد {t.first_name}.")
             return
-
-        if text == "حظر":
-            tgt = await get_target_user(update, context)
-            if tgt:
-                await context.bot.ban_chat_member(chat_id, tgt.id)
-                await msg.reply_text(f"🚫 تم حظر {tgt.first_name}.")
+        if text=="حظر":
+            t=await get_target(upd,ctx)
+            if t: await ctx.bot.ban_chat_member(cid,t.id); await msg.reply_text(f"🚫 تم حظر {t.first_name}.")
             return
-
-        if text == "فك حظر":
-            tgt = await get_target_user(update, context)
-            if tgt:
-                await context.bot.unban_chat_member(chat_id, tgt.id, only_if_banned=True)
-                await msg.reply_text(f"✅ تم فك حظر {tgt.first_name}.")
+        if text=="فك حظر":
+            t=await get_target(upd,ctx)
+            if t: await ctx.bot.unban_chat_member(cid,t.id,only_if_banned=True); await msg.reply_text(f"✅ فك حظر {t.first_name}.")
             return
-
-        if text == "كتم":
-            tgt = await get_target_user(update, context)
-            if tgt:
-                await context.bot.restrict_chat_member(chat_id, tgt.id,
-                                                       ChatPermissions(can_send_messages=False))
-                await msg.reply_text(f"🔇 تم كتم {tgt.first_name}.")
+        if text=="كتم":
+            t=await get_target(upd,ctx)
+            if t: await ctx.bot.restrict_chat_member(cid,t.id,ChatPermissions(can_send_messages=False)); await msg.reply_text(f"🔇 تم كتم {t.first_name}.")
             return
-
-        if text == "الغاء كتم":
-            tgt = await get_target_user(update, context)
-            if tgt:
-                perms = ChatPermissions(
-                    can_send_messages=True, can_send_audios=True,
-                    can_send_documents=True, can_send_photos=True,
-                    can_send_videos=True, can_send_video_notes=True,
-                    can_send_voice_notes=True, can_send_polls=True,
-                    can_send_other_messages=True, can_add_web_page_previews=True
-                )
-                await context.bot.restrict_chat_member(chat_id, tgt.id, permissions=perms)
-                await msg.reply_text(f"🔊 تم رفع الكتم عن {tgt.first_name}.")
+        if text=="الغاء كتم":
+            t=await get_target(upd,ctx)
+            if t:
+                p=ChatPermissions(can_send_messages=True,can_send_audios=True,can_send_documents=True,
+                    can_send_photos=True,can_send_videos=True,can_send_video_notes=True,
+                    can_send_voice_notes=True,can_send_polls=True,can_send_other_messages=True,can_add_web_page_previews=True)
+                await ctx.bot.restrict_chat_member(cid,t.id,permissions=p); await msg.reply_text(f"🔊 رُفع كتم {t.first_name}.")
             return
-
         if text.startswith("تثبيت") and msg.reply_to_message:
-            await context.bot.pin_chat_message(chat_id, msg.reply_to_message.message_id)
-            return
-
+            await ctx.bot.pin_chat_message(cid,msg.reply_to_message.message_id); return
         if text.startswith("الغاء تثبيت") and msg.reply_to_message:
-            await context.bot.unpin_chat_message(chat_id, msg.reply_to_message.message_id)
+            await ctx.bot.unpin_chat_message(cid,msg.reply_to_message.message_id); return
+
+    if priv_own:
+        RM={"رفع مالك":ROLE_OWNER,"رفع مدير":ROLE_MGR,"رفع مميز":ROLE_VIP}
+        if text in RM:
+            t=await get_target(upd,ctx)
+            if t: set_role(cid,t.id,RM[text]); await msg.reply_text(f"✅ {t.first_name} صار {ROLE_LABEL[RM[text]]}.")
             return
-
-    # ══ أوامر المالك فقط ══
-    if priv_owner:
-        r_map = {"رفع مالك": ROLE_OWNER, "رفع مدير": ROLE_MANAGER, "رفع مميز": ROLE_VIP}
-        if text in r_map:
-            tgt = await get_target_user(update, context)
-            if tgt:
-                set_role(chat_id, tgt.id, r_map[text])
-                await msg.reply_text(
-                    f"✅ صار <b>{tgt.first_name}</b> {ROLE_LABEL[r_map[text]]}.",
-                    parse_mode="HTML"
-                )
+        if text=="تنزيل رتبة":
+            t=await get_target(upd,ctx)
+            if t: rm_role(cid,t.id); await msg.reply_text(f"✅ رتبة {t.first_name} أُزيلت.")
             return
+        if text=="تشغيل سيك": s["ai_mode"]=True; save_settings(cid,s); return await msg.reply_text("🤖 الذكاء الاصطناعي شغّال في الكروب!")
+        if text=="ايقاف سيك": s["ai_mode"]=False; save_settings(cid,s); return await msg.reply_text("😴 الذكاء الاصطناعي موقوف.")
 
-        if text == "تنزيل رتبة":
-            tgt = await get_target_user(update, context)
-            if tgt:
-                remove_role(chat_id, tgt.id)
-                await msg.reply_text(f"✅ تمت إزالة رتبة {tgt.first_name}.")
-            return
+    # روابط في الكروب
+    if re.search(r'(youtube\.com|youtu\.be|shorts)',text,re.I): await yt_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
+    if re.search(r'(x\.com|twitter\.com)',text,re.I): await x_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
+    if re.search(r'(tiktok\.com|vm\.tiktok\.com|douyin\.com)',text,re.I): await tiktok_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid,msg.message_id); return
+    if re.search(r'(facebook\.com|fb\.watch|fb\.com)',text,re.I): await fb_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
+    m=re.match(r'^ستوري\s+@?(\S+)',text,re.I)
+    if m: await insta_stories_handler(upd,ctx,m.group(1),cid); return
+    if re.search(r'instagram\.com',text,re.I): await insta_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid); return
 
-        if text == "تشغيل سيك":
-            settings["ai_mode"] = True
-            save_settings(chat_id, settings)
-            return await msg.reply_text("🤖 تم تفعيل الذكاء الاصطناعي في الكروب!")
-
-        if text == "ايقاف سيك":
-            settings["ai_mode"] = False
-            save_settings(chat_id, settings)
-            return await msg.reply_text("😴 تم إيقاف الذكاء الاصطناعي.")
-
-    # ══ روابط الكروب ══
-    if re.search(r'(youtube\.com|youtu\.be|shorts)', text, re.I):
-        await handle_youtube_link(update, context, text, user_id)
-        return
-    if re.search(r'(x\.com|twitter\.com)', text, re.I):
-        await handle_twitter_link(update, context, text, chat_id)
-        return
-    if re.search(r'(tiktok\.com|vm\.tiktok\.com|douyin\.com)', text, re.I):
-        await handle_tiktok_link(update, context, text, chat_id, msg.message_id)
-        return
-    if re.search(r'(facebook\.com|fb\.watch|fb\.com)', text, re.I):
-        await handle_facebook_link(update, context, text, chat_id)
-        return
-    if re.search(r'instagram\.com', text, re.I):
-        await handle_instagram_link(update, context, text, chat_id)
-        return
-
-    # ══ الذكاء الاصطناعي في الكروب ══
-    if settings.get("ai_mode", False):
-        skip_cmds = ('رفع', 'تنزيل', 'طرد', 'حظر', 'كتم', 'قفل',
-                     'فتح', 'منع', 'تفعيل', 'اضافة', 'حذف', 'الكلمات',
-                     'مسح', 'تحذير', 'الترحيب', 'تعديل')
-        if not any(text.startswith(c) for c in skip_cmds):
-            await context.bot.send_chat_action(chat_id, 'typing')
-            reply = await ask_deepseek(text)
-            return await msg.reply_text(reply)
-
+    # ذكاء اصطناعي في الكروب
+    if s.get("ai_mode"):
+        skip=('رفع','تنزيل','طرد','حظر','كتم','قفل','فتح','منع','تفعيل','اضافة','حذف','مسح','تحذير','الترحيب','تعديل')
+        if not any(text.startswith(c) for c in skip):
+            await ctx.bot.send_chat_action(cid,'typing')
+            return await msg.reply_text(await ask_ai(text))
 
 # ═══════════════════════════════════════════════════════════════════
 # 12. تشغيل البوت
 # ═══════════════════════════════════════════════════════════════════
 def main():
-    token = os.environ.get("BOT_TOKEN", "8159446452:AAHvUE5aEvuTmGfwAYAV7EqfshKD9Nv-B5o")
+    token = os.environ.get("BOT_TOKEN","8159446452:AAHvUE5aEvuTmGfwAYAV7EqfshKD9Nv-B5o")
     app = Application.builder().token(token).build()
-
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CallbackQueryHandler(
-        button_callback,
-        pattern=r"^(show_w_|cmd_|dl_|ttt_)"
-    ))
+    app.add_handler(CommandHandler("start",cmd_start))
+    app.add_handler(CallbackQueryHandler(btn_cb,pattern=r"^(show_w_|cmd_|dl_|ttt_)"))
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS,welcome_handler))
+    app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.TEXT,edit_handler))
     app.add_handler(MessageHandler(
-        filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_member
-    ))
-    app.add_handler(MessageHandler(
-        filters.UpdateType.EDITED_MESSAGE & filters.TEXT, edited_message_handler
-    ))
-    # فلتر منع الميديا (group=0 → يُشغّل أولاً)
-    app.add_handler(MessageHandler(
-        filters.ChatType.GROUPS & (
-            filters.Sticker.ALL | filters.ANIMATION |
-            filters.VIDEO | filters.PHOTO
-        ),
-        media_filter_handler
-    ), group=0)
-    # تتبع الرسائل
-    app.add_handler(MessageHandler(
-        filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,
-        track_messages_handler
-    ), group=1)
-    # المعالج الرئيسي
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, handle_message
-    ), group=2)
-
-    logger.info("🚀 Bot is running!")
+        filters.ChatType.GROUPS & (filters.Sticker.ALL | filters.ANIMATION | filters.VIDEO | filters.PHOTO),
+        media_filter), group=0)
+    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,track_msg), group=1)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_msg), group=2)
+    logger.info("🚀 Bot started!")
     app.run_polling(drop_pending_updates=True)
-
 
 if __name__ == "__main__":
     main()
