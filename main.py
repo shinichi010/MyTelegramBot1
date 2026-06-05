@@ -169,7 +169,7 @@ async def get_target(upd, ctx):
 # 4. الذكاء الاصطناعي
 # ═══════════════════════════════════════════════════════════════════
 async def ask_ai(prompt: str) -> str:
-    api_key = os.environ.get("DEEPSEEK_KEY", "sk-f5149facf1164e6db0af5fd276c8fbfe")
+    api_key = os.environ.get("DEEPSEEK_KEY", "sk-b6d1e425ff744665af155900d6283c96")
     def _call():
         try:
             r = requests.post("https://api.deepseek.com/chat/completions",
