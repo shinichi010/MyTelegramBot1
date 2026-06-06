@@ -49,7 +49,6 @@ TEXT_ADMIN = (
     "• <code>تفعيل ملصقات | تفعيل قيف | تفعيل مقاطع | تفعيل صور</code>\n"
     "• <code>اضافة رد X | Y</code> / <code>حذف رد X</code> / <code>قائمة الردود</code>\n"
     "• <code>الترحيب تشغيل/ايقاف</code> / <code>تعديل تشغيل/ايقاف</code>\n"
-    "• <code>تشغيل سيك | ايقاف سيك</code> — الذكاء الاصطناعي\n"
     "• <code>مسح X</code> — حذف X رسالة"
 )
 TEXT_FUN = (
@@ -670,10 +669,6 @@ async def cmd_start(upd, ctx):
             "📘 فيس بوك  📸 انستغرام\n"
             "📌 بينترست\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "🤖 <b>الذكاء الاصطناعي:</b>\n"
-            "اكتب <code>تشغيل سيك</code> لبدء المحادثة\n"
-            "اكتب <code>ايقاف سيك</code> لإيقافه\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
             "🎵 <b>معلومات تيك توك:</b>\n"
             "اكتب <code>تيك @username</code>\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
@@ -759,7 +754,7 @@ async def btn_cb(upd, ctx):
                 await q.message.delete()
             except Exception as e: await em(f"❌ فشل الرفع: {str(e)[:80]}")
         else:
-            await em("❌ فشل التحميل.\n• الفيديو محمي؟ جرب إضافة cookies.txt\n• جرب جودة أقل")
+            await em("❌ فشل التحميل.\n• جرب جودة أقل")
         if tmp: shutil.rmtree(tmp, ignore_errors=True)
         return
 
@@ -893,9 +888,7 @@ async def welcome_handler(upd, ctx):
                 "👋 <b>أهلاً! تم إضافتي للمجموعة!</b>\n\n"
                 "⚠️ <b>لكي أعمل بشكل كامل:</b>\n"
                 "1️⃣ اجعلني <b>مشرفاً</b> في المجموعة\n"
-                "2️⃣ افتح @BotFather وأوقف Privacy Mode:\n"
-                "   <code>mybots → اختر البوت → Bot Settings → Group Privacy → Disable</code>\n\n"
-                "اكتب <code>الاوامر</code> لقائمة الأوامر الكاملة 📋",
+                "2️⃣ اكتب <code>الاوامر</code> لقائمة الأوامر الكاملة 📋\n",
                 parse_mode="HTML"
             )
             continue
