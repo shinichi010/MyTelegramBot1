@@ -361,10 +361,6 @@ async def yt_handler(upd, ctx, url, uid):
     if not info:
         return await wm.edit_text(
             "❌ فشل جلب بيانات اليوتيوب.\n\n"
-            "جرب هذه الحلول:\n"
-            "• شغّل هذا الأمر على Railway:\n"
-            "  <code>pip install -U yt-dlp</code>\n"
-            "• أو أضف <code>pip install -U yt-dlp</code> لـ nixpacks.toml\n"
             "• تأكد أن الرابط عام وغير محدود بالمنطقة",
             parse_mode="HTML"
         )
@@ -471,7 +467,7 @@ async def x_handler(upd, ctx, url, uid):
                 await ctx.bot.send_video(cid,f,caption="✅ X 🐦",supports_streaming=True)
             await wm.delete()
         else:
-            no_cookie_hint = "\n💡 أضف cookies.txt من حساب X لتحميل المحتوى الخاص" if not has_cookies else ""
+            no_cookie_hint = "\n💡 اذا تكررت المشكلة انتظر لحين حل المشكلة من قبل المطور" if not has_cookies else ""
             await wm.edit_text(f"❌ فشل التحميل من X.\nالتغريدة خاصة أو محذوفة.{no_cookie_hint}")
         if tmp: shutil.rmtree(tmp, ignore_errors=True)
         return
@@ -525,23 +521,44 @@ async def tiktok_handler(upd, ctx, url, cid, reply_id):
                                          reply_to_message_id=reply_id, supports_streaming=True)
             return await wm.delete()
         except Exception as e: logger.error(f"[TikTok send] {e}")
-    # محاولة 2: yt-dlp مع إعدادات تيك توك خاصة
-    await wm.edit_text("⏳ محاولة بديلة...")
+    # محاولة 2: yt-dlp مباشرة (يدعم تيك توك + دوين)
+    await wm.edit_text("⏳ اعادة محاولة تحميل المحتوى...")
+    is_douyin = 'douyin.com' in url
+
     def _dl_tiktok():
-        opts = _base_opts(msg.message_id)
-        opts['format'] = 'best[ext=mp4]/best'
-        tmp = os.path.dirname(opts['outtmpl'])
-        opts['http_headers']['User-Agent'] = 'TikTok 26.2.0 rv:262018 (iPhone; iOS 14.4.2; en_US) Cronet'
+        tmp2 = tempfile.mkdtemp()
+        opts = {
+            'outtmpl': os.path.join(tmp2,'%(id)s.%(ext)s'),
+            'quiet':True,'nocheckcertificate':True,'geo_bypass':True,
+            'ffmpeg_location':FFMPEG,
+            'format':'best[ext=mp4]/best',
+            'merge_output_format':'mp4',
+            'http_headers':{
+                'User-Agent': (
+                    'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 Chrome/91.0.4472.120 Mobile Safari/537.36'
+                    if is_douyin else
+                    'TikTok 26.2.0 rv:262018 (iPhone; iOS 14.4.2; en_US) Cronet'
+                ),
+            },
+        }
+        if is_douyin:
+            opts['extractor_args'] = {'douyin': {'app_name': ['trill']}}
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            for f in os.listdir(tmp):
-                if f.endswith(('.mp4','.webm')): return os.path.join(tmp,f), tmp
-        return None, tmp
+            for f in os.listdir(tmp2):
+                if f.endswith(('.mp4','.webm','.mkv')):
+                    return os.path.join(tmp2,f), tmp2
+        return None, tmp2
+
     fp, tmp = await asyncio.get_running_loop().run_in_executor(None, _dl_tiktok)
     if fp and os.path.exists(fp):
-        with open(fp,'rb') as f: await ctx.bot.send_video(cid, f, caption="✅ تيك توك 🎵", supports_streaming=True)
+        emoji = "🇨🇳 دوين" if is_douyin else "✅ تيك توك 🎵"
+        with open(fp,'rb') as f: await ctx.bot.send_video(cid, f, caption=emoji, supports_streaming=True)
         await wm.delete()
-    else: await wm.edit_text("❌ فشل التحميل. قد يكون الرابط منتهياً أو الحساب خاص.")
+    else:
+        await wm.edit_text(
+            "❌ فشل التحميل.\n" + ("• دوين يحتاج أحياناً VPN 🇨🇳" if is_douyin else "• قد يكون الرابط منتهياً أو الحساب خاص")
+        )
     if tmp: shutil.rmtree(tmp, ignore_errors=True)
 
 async def insta_handler(upd, ctx, url, cid):
@@ -549,14 +566,15 @@ async def insta_handler(upd, ctx, url, cid):
     msg = upd.message
     has_cookies = os.path.exists('cookies.txt')
 
-    # ستوريات — تحتاج cookies
+    # ستوريات — قريباً
     if '/stories/' in url:
-        if not has_cookies:
-            return await msg.reply_text(
-                "🔒 <b>تحميل ستوريات انستغرام يحتاج تسجيل دخول</b>\n\n"
-                "أضف <code>COOKIES_DATA</code> من حساب انستغرام لتفعيل هذه الميزة.",
-                parse_mode="HTML"
-            )
+        return await msg.reply_text(
+            "🛠 <b>نعمل على دعم تحميل ستوريات انستغرام!</b>\n\n"
+            "هذه الميزة قيد التطوير الحين ⚙️\n"
+            "قريباً تكون جاهزة إن شاء الله ⚡\n\n"
+            "💡 في الوقت الحالي تكدر تحمل <b>الريلز والمنشورات</b> بإرسال الرابط مباشرة 📥",
+            parse_mode="HTML"
+        )
 
     wm = await msg.reply_text("📸 جاري التحميل من انستغرام...")
     tmp = tempfile.mkdtemp()
@@ -602,7 +620,7 @@ async def insta_handler(upd, ctx, url, cid):
         await wm.delete()
     except Exception as e:
         logger.error(f"[Insta] {e}")
-        hint = "\n💡 أضف cookies.txt من حساب انستغرام للمحتوى الخاص" if not has_cookies else ""
+        hint = "\n💡 اذا تكررت المشكلة انتظر لحين حل المشكلة من قبل المطور" if not has_cookies else ""
         await wm.edit_text(f"❌ فشل التحميل من انستغرام.{hint}")
     finally: shutil.rmtree(tmp, ignore_errors=True)
 
@@ -610,11 +628,76 @@ async def insta_handler(upd, ctx, url, cid):
 async def insta_stories_handler(upd, ctx, username, cid):
     """ستوريات انستغرام — قريباً"""
     await upd.message.reply_text(
-        "🔧 <b>تحميل ستوريات انستغرام قريباً!</b>\n\n"
-        "نعمل على دعم الستوريات وتحميل منشورات الصور 🛠\n"
-        "قريباً تكون جاهزة إن شاء الله ⚡",
+        "🛠 <b>نعمل على دعم تحميل ستوريات انستغرام!</b>\n\n"
+        "هذه الميزة تحتاج ربط حساب انستغرام وقيد التطوير الحين ⚙️\n"
+        "قريباً تكون جاهزة إن شاء الله ⚡\n\n"
+        "💡 في الوقت الحالي تكدر تحمل <b>الريلز والمنشورات</b> بإرسال الرابط مباشرة 📥",
         parse_mode="HTML"
     )
+
+
+async def pinterest_handler(upd, ctx, url, cid):
+    """بينترست — فيديو وصور"""
+    msg = upd.message
+    wm = await msg.reply_text("📌 جاري التحميل من بينترست...")
+    tmp = tempfile.mkdtemp()
+
+    def _get_info():
+        opts = {'quiet':True,'nocheckcertificate':True,'skip_download':True,'geo_bypass':True}
+        with YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+
+    def _dl():
+        opts = {
+            'quiet':True,'nocheckcertificate':True,'geo_bypass':True,
+            'ffmpeg_location':FFMPEG,
+            'outtmpl':os.path.join(tmp,'%(id)s.%(ext)s'),
+            'format':'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best',
+            'merge_output_format':'mp4',
+        }
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            all_files = [os.path.join(tmp,f) for f in os.listdir(tmp) if os.path.isfile(os.path.join(tmp,f))]
+            if all_files:
+                best = max(all_files, key=os.path.getsize)
+                return best, info.get('title','بينترست')
+        return None, 'بينترست'
+
+    try:
+        info = await asyncio.get_running_loop().run_in_executor(None, _get_info)
+        thumb = info.get('thumbnail','') if info else ''
+        title = info.get('title','بينترست') if info else 'بينترست'
+
+        try:
+            fp, title = await asyncio.get_running_loop().run_in_executor(None, _dl)
+            if fp and os.path.exists(fp):
+                await wm.edit_text("📤 جاري الرفع...")
+                ext = fp.rsplit('.',1)[-1].lower()
+                if ext in ('mp4','webm','mkv'):
+                    with open(fp,'rb') as f: await ctx.bot.send_video(cid,f,caption=f"📌 {title[:60]}",supports_streaming=True)
+                else:
+                    with open(fp,'rb') as f: await ctx.bot.send_photo(cid,f,caption=f"📌 {title[:60]}")
+                return await wm.delete()
+        except Exception as e2:
+            logger.warning(f"[Pinterest] dl failed: {e2}")
+
+        # fallback — صورة من الـ thumbnail
+        if thumb:
+            headers = {'User-Agent':'Mozilla/5.0','Referer':'https://www.pinterest.com/'}
+            hq = re.sub(r'/\d+x/', '/originals/', thumb)
+            for img_url in [hq, thumb]:
+                try:
+                    r = requests.get(img_url, headers=headers, timeout=15)
+                    if r.status_code == 200 and len(r.content) > 1000:
+                        await ctx.bot.send_photo(cid, r.content, caption=f"📌 {title[:60]}")
+                        return await wm.delete()
+                except: pass
+
+        await wm.edit_text("❌ ما قدرت أحمل من هذا الرابط.\nتأكد أن الـ Pin عام.")
+    except Exception as e:
+        logger.error(f"[Pinterest] {e}")
+        await wm.edit_text("❌ فشل التحميل من بينترست.")
+    finally: shutil.rmtree(tmp, ignore_errors=True)
 
 async def music_handler(upd, ctx, url, cid, platform="🎵"):
     """تحميل من SoundCloud أو YouTube Music"""
@@ -1050,7 +1133,7 @@ async def handle_msg(upd, ctx):
                     "💡 <b>شو أقدر أسويلك؟</b>\n\n"
                     "📥 أرسل رابط للتحميل (يوتيوب، تيك توك، X، فيس بوك، انستغرام، بينترست)\n"
                     "🎵 يوتيوب ميوزك / ساوند كلاود — أرسل الرابط مباشرة\n"
-                    "🤖 <code>تشغيل سيك</code> — تفعيل Gemini AI\n"
+                    "🤖 الذكاء الاصطناعي قريبا....\n"
                     "🌐 <code>ترجمة [نص]</code> — ترجمة للعربي\n"
                     "🔢 <code>حساب 5*5+2</code> — حاسبة\n"
                     "🎵 <code>تيك @username</code> — معلومات تيك توك",
