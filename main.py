@@ -310,8 +310,8 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
         opts['http_headers']['User-Agent'] = 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
 
     if media_type == "audio":
-        opts['format'] = 'bestaudio/best'
-        opts['postprocessors'] = [{'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':'192'}]
+        opts['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
+        opts['postprocessors'] = [{'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':'320'}]
     else:
         h = int(quality) if quality and str(quality).isdigit() else 720
         # استخدم format_id المخزن إذا متوفر (يضمن الجودة الصحيحة)
@@ -388,138 +388,173 @@ def tiktok_api(url: str):
 # ═══════════════════════════════════════════════════════════════════
 async def yt_handler(upd, ctx, url, uid):
     msg = upd.message
-    wm = await msg.reply_text("🔍 جاري جلب معلومات الفيديو...")
-    format_map, info = await asyncio.get_running_loop().run_in_executor(None, lambda: get_qualities(url))
-    heights = format_map  # يدعم الاثنين
+    wm = await msg.reply_text("🔍 جاري جلب معلومات الفيديو من يوتيوب...")
+
+    def _get_info():
+        # جرب عدة player clients
+        for client in [['ios'], ['android'], ['mweb'], ['web']]:
+            try:
+                opts = {
+                    'quiet': True, 'noplaylist': True, 'nocheckcertificate': True,
+                    'skip_download': True, 'geo_bypass': True,
+                    'extractor_args': {'youtube': {'player_client': client}},
+                    'http_headers': {
+                        'User-Agent': (
+                            'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
+                            if 'android' in client else
+                            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36'
+                        )
+                    },
+                }
+                with YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    if info: return info
+            except Exception as e:
+                logger.warning(f"[YT] client {client}: {e}")
+        return None
+
+    info = await asyncio.get_running_loop().run_in_executor(None, _get_info)
     if not info:
         return await wm.edit_text(
-            "❌ فشل جلب بيانات اليوتيوب.\n\n"
-            "• تأكد أن الرابط عام وغير محدود بالمنطقة",
+            "❌ فشل جلب بيانات اليوتيوب.\n"
+            "• شغّل: <code>pip install -U yt-dlp</code> على Railway\n"
+            "• أو تأكد أن الرابط عام",
             parse_mode="HTML"
         )
+
+    # بناء format_map من المعلومات
+    format_map = {}
+    for f in info.get('formats', []):
+        h = f.get('height')
+        if not h or f.get('vcodec','none') == 'none': continue
+        tbr = f.get('tbr') or f.get('vbr') or 0
+        if h not in format_map or tbr > format_map[h].get('tbr', 0):
+            format_map[h] = {'id': f['format_id'], 'tbr': tbr}
+
     uhash = str(random.randint(10000,99999))
     ctx.bot_data[uhash] = url
-    # خزّن format_map للاستخدام عند التحميل
-    if isinstance(heights, dict):
-        ctx.bot_data[url[:60]+'_fmt'] = heights
-    dur = info.get('duration',0)
-    cap = (f"🎬 <b>{info.get('title','')[:60]}</b>\n"
-           f"⏱ {dur//60}:{dur%60:02d} | 👁 {info.get('view_count',0):,}")
-    kb = build_quality_kb(heights, uid, uhash, "🎬")
+    ctx.bot_data[url[:60]+'_fmt'] = format_map
+
+    dur = info.get('duration', 0)
+    views = info.get('view_count', 0)
+    cap = (
+        f"🎬 <b>{info.get('title','')[:60]}</b>\n"
+        f"⏱ {dur//60}:{dur%60:02d}"
+        + (f" | 👁 {views:,}" if views else "")
+    )
+    kb = build_quality_kb(format_map, uid, uhash, "🎬")
     try:
-        if info.get('thumbnail'): await ctx.bot.send_photo(msg.chat_id, info['thumbnail'], caption=cap, parse_mode="HTML", reply_markup=kb)
-        else: await msg.reply_text(cap, parse_mode="HTML", reply_markup=kb)
+        if info.get('thumbnail'):
+            await ctx.bot.send_photo(msg.chat_id, info['thumbnail'], caption=cap, parse_mode="HTML", reply_markup=kb)
+        else:
+            await msg.reply_text(cap, parse_mode="HTML", reply_markup=kb)
         await wm.delete()
-    except: await wm.edit_text(cap, parse_mode="HTML", reply_markup=kb)
+    except:
+        await wm.edit_text(cap, parse_mode="HTML", reply_markup=kb)
+
+
+async def auto_download(upd, ctx, url, cid, platform="🎬", max_height=1440):
+    """تحميل تلقائي بأعلى جودة متوفرة (حد أقصى max_height)"""
+    msg = upd.message
+    wm = await msg.reply_text(f"{platform} جاري التحميل بأعلى جودة...")
+    tmp = tempfile.mkdtemp()
+    opts = {**_base_opts(msg.message_id)}
+    opts['outtmpl'] = os.path.join(tmp, '%(id)s.%(ext)s')
+    opts['format'] = (
+        f'bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/'
+        f'bestvideo[height<={max_height}]+bestaudio/'
+        f'best[height<={max_height}][ext=mp4]/'
+        f'best[height<={max_height}]/best'
+    )
+    opts['format_sort'] = [f'res:{max_height}', '+codec:h264', 'ext:mp4']
+    opts['merge_output_format'] = 'mp4'
+
+    active_dl[msg.message_id] = "0%"
+    prog_task = asyncio.create_task(
+        _progress_updater(ctx, cid, msg.message_id, wm.message_id)
+    )
+
+    def _run():
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            files = sorted(
+                [os.path.join(tmp, f) for f in os.listdir(tmp)
+                 if f.endswith(('.mp4', '.webm', '.mkv'))],
+                key=os.path.getsize, reverse=True
+            )
+            return files[0] if files else None, info.get('title', '')
+
+    try:
+        fp, title = await asyncio.get_running_loop().run_in_executor(None, _run)
+        active_dl.pop(msg.message_id, None); prog_task.cancel()
+        if fp and os.path.exists(fp):
+            await wm.edit_text("📤 جاري الرفع...")
+            with open(fp, 'rb') as f:
+                await ctx.bot.send_video(
+                    cid, f,
+                    caption=f"{platform} {title[:60]}" if title else platform,
+                    supports_streaming=True
+                )
+            await wm.delete()
+        else:
+            await wm.edit_text("❌ فشل التحميل. تأكد أن الرابط عام.")
+    except Exception as e:
+        active_dl.pop(msg.message_id, None); prog_task.cancel()
+        logger.error(f"[auto_dl] {e}")
+        await wm.edit_text(f"❌ فشل التحميل: {str(e)[:100]}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 async def fb_handler(upd, ctx, url, uid):
-    """فيس بوك — يستخدم user-agent موبايل لتجاوز القيود"""
-    msg = upd.message
-    wm = await msg.reply_text("🔍 جاري جلب معلومات الفيديو من فيس بوك...")
-    def _get_info():
-        opts = {
-            'quiet': True, 'noplaylist': True, 'nocheckcertificate': True,
-            'skip_download': True, 'geo_bypass': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://www.facebook.com/',
-            },
-        }
-        if os.path.exists('cookies.txt'): opts['cookiefile'] = 'cookies.txt'
-        with YoutubeDL(opts) as ydl:
-            return ydl.extract_info(url, download=False)
-    try:
-        info = await asyncio.get_running_loop().run_in_executor(None, _get_info)
-    except Exception as e:
-        logger.error(f"[FB] {e}")
-        info = None
-    if not info:
-        return await wm.edit_text("❌ فشل جلب الفيديو من فيس بوك.\n• الفيديو يجب يكون عام\n• جرب نسخ الرابط مباشرة من المتصفح")
-    uhash = str(random.randint(10000,99999)); ctx.bot_data[uhash] = (url, 'facebook')
-    heights = {f.get('height') for f in info.get('formats',[]) if f.get('height') and f.get('vcodec','none') != 'none'}
-    kb = build_quality_kb(sorted(heights, reverse=True), uid, uhash, "📘")
-    cap = f"📘 <b>{info.get('title','فيديو فيس بوك')[:60]}</b>\n\nاختر الجودة:"
-    try:
-        if info.get('thumbnail'): await ctx.bot.send_photo(msg.chat_id, info['thumbnail'], caption=cap, parse_mode="HTML", reply_markup=kb)
-        else: await msg.reply_text(cap, parse_mode="HTML", reply_markup=kb)
-        await wm.delete()
-    except: await wm.edit_text(cap, parse_mode="HTML", reply_markup=kb)
+    """فيس بوك — تحميل تلقائي بأعلى جودة"""
+    await auto_download(upd, ctx, url, upd.message.chat_id, "📘")
 
 async def x_handler(upd, ctx, url, uid):
-    """X/Twitter — تحميل بالـ cookies"""
+    """X/Twitter — تحميل تلقائي بأعلى جودة"""
     msg = upd.message
     cid = msg.chat_id
     has_cookies = os.path.exists('cookies.txt')
-    wm = await msg.reply_text("🔍 جاري جلب المقطع من X...")
-
+    wm = await msg.reply_text("🐦 جاري التحميل من X...")
     fx_url = url.replace('x.com','fixupx.com').replace('twitter.com','fixupx.com')
+    tmp = tempfile.mkdtemp()
+    opts = {**_base_opts(msg.message_id)}
+    opts['outtmpl'] = os.path.join(tmp,'%(id)s.%(ext)s')
+    opts['format'] = 'bestvideo[height<=1440]+bestaudio/best[height<=1440]/best'
+    opts['merge_output_format'] = 'mp4'
+    if has_cookies: opts['cookiefile'] = 'cookies.txt'
+    active_dl[msg.message_id] = "0%"
+    prog = asyncio.create_task(_progress_updater(ctx, cid, msg.message_id, wm.message_id))
 
-    def _get_info(try_url):
-        opts = {
-            'quiet':True,'noplaylist':True,'nocheckcertificate':True,
-            'skip_download':True,'geo_bypass':True,'extractor_retries':2,
-            'http_headers':{
-                'User-Agent':'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
-                'Accept-Language':'en-US,en;q=0.9',
-            },
-        }
-        if has_cookies: opts['cookiefile'] = 'cookies.txt'
-        with YoutubeDL(opts) as ydl:
-            return ydl.extract_info(try_url, download=False)
+    def _dl():
+        for try_url in [url, fx_url]:
+            try:
+                o = {**opts}
+                with YoutubeDL(o) as ydl:
+                    info = ydl.extract_info(try_url, download=True)
+                    files = sorted(
+                        [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith(('.mp4','.webm','.mkv'))],
+                        key=os.path.getsize, reverse=True
+                    )
+                    if files: return files[0], info.get('title','')
+            except: pass
+        return None, ''
 
-    info = None; heights = set()
-    for try_url in [url, fx_url]:
-        try:
-            info = await asyncio.get_running_loop().run_in_executor(None, lambda u=try_url: _get_info(u))
-            heights = {f.get('height') for f in info.get('formats',[]) if f.get('height') and f.get('vcodec','none')!='none'}
-            if info and heights: break
-        except Exception as e:
-            logger.error(f"[X] {try_url[:40]}: {e}"); info = None
-
-    if not info or not heights:
-        await wm.edit_text("⏳ جاري التحميل المباشر...")
-        def _direct():
-            tmp = tempfile.mkdtemp()
-            opts = {
-                'outtmpl':os.path.join(tmp,'%(id)s.%(ext)s'),
-                'quiet':True,'nocheckcertificate':True,'geo_bypass':True,
-                'ffmpeg_location':FFMPEG,'format':'best[ext=mp4]/best',
-                'http_headers':{'User-Agent':'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15'},
-            }
-            if has_cookies: opts['cookiefile']='cookies.txt'
-            for try_url in [url, fx_url]:
-                try:
-                    with YoutubeDL(opts) as ydl:
-                        info2 = ydl.extract_info(try_url, download=True)
-                        for f in os.listdir(tmp):
-                            if f.endswith(('.mp4','.webm','.mkv')):
-                                return os.path.join(tmp,f), tmp
-                except: pass
-            return None, tmp
-        fp, tmp = await asyncio.get_running_loop().run_in_executor(None, _direct)
+    try:
+        fp, title = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        active_dl.pop(msg.message_id, None); prog.cancel()
         if fp and os.path.exists(fp):
             await wm.edit_text("📤 جاري الرفع...")
             with open(fp,'rb') as f:
-                await ctx.bot.send_video(cid,f,caption="✅ X 🐦",supports_streaming=True)
+                await ctx.bot.send_video(cid, f, caption=f"🐦 {title[:60]}" if title else "🐦 X", supports_streaming=True)
             await wm.delete()
         else:
-            no_cookie_hint = "\n💡 اذا تكررت المشكلة ارسلها للحساب @shn_1 " if not has_cookies else ""
-            await wm.edit_text(f"❌ فشل التحميل من X.\nالتغريدة خاصة أو محذوفة.{no_cookie_hint}")
-        if tmp: shutil.rmtree(tmp, ignore_errors=True)
-        return
-
-    uhash = str(random.randint(10000,99999)); ctx.bot_data[uhash] = url
-    kb = build_quality_kb(list(heights), uid, uhash, "🐦")
-    cap = f"🐦 <b>{info.get('title','مقطع X')[:60]}</b>\n\nاختر الجودة:"
-    try:
-        if info.get('thumbnail'):
-            await ctx.bot.send_photo(msg.chat_id,info['thumbnail'],caption=cap,parse_mode="HTML",reply_markup=kb)
-        else:
-            await msg.reply_text(cap,parse_mode="HTML",reply_markup=kb)
-        await wm.delete()
-    except: await wm.edit_text(cap,parse_mode="HTML",reply_markup=kb)
-
+            hint = "\n💡 تأكد من الكوكيز أو أن التغريدة عامة" if not has_cookies else ""
+            await wm.edit_text(f"❌ فشل التحميل من X.{hint}")
+    except Exception as e:
+        active_dl.pop(msg.message_id, None); prog.cancel()
+        await wm.edit_text(f"❌ خطأ: {str(e)[:80]}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 async def tiktok_handler(upd, ctx, url, cid, reply_id):
     msg = upd.message
@@ -737,10 +772,11 @@ async def pinterest_handler(upd, ctx, url, cid):
     finally: shutil.rmtree(tmp, ignore_errors=True)
 
 async def music_handler(upd, ctx, url, cid, platform="🎵"):
-    """تحميل من SoundCloud أو YouTube Music"""
+    """تحميل صوت بأعلى جودة (320kbps MP3)"""
     msg = upd.message
-    wm = await msg.reply_text(f"{platform} جاري التحميل...")
+    wm = await msg.reply_text(f"{platform} جاري تحميل الصوت بأعلى جودة...")
     tmp = tempfile.mkdtemp()
+    is_yt = bool(re.search(r'(youtube\.com|youtu\.be|music\.youtube\.com)', url))
     opts = {
         'outtmpl': os.path.join(tmp,'%(title)s.%(ext)s'),
         'quiet':True,'nocheckcertificate':True,'geo_bypass':True,
@@ -749,25 +785,123 @@ async def music_handler(upd, ctx, url, cid, platform="🎵"):
         'postprocessors':[{'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':'320'}],
         'http_headers':{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36'},
     }
+    if is_yt:
+        opts['extractor_args'] = {'youtube': {'player_client': ['ios', 'android']}}
     def _dl():
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             for f in os.listdir(tmp):
-                if f.endswith('.mp3'): return os.path.join(tmp,f), info.get('title',''), info.get('uploader','')
+                if f.endswith('.mp3'): return os.path.join(tmp,f), info.get('title',''), info.get('uploader','') or info.get('artist','')
         return None,'',''
     try:
         fp,title,artist = await asyncio.get_running_loop().run_in_executor(None, _dl)
         if fp and os.path.exists(fp):
             await wm.edit_text("📤 جاري الرفع...")
             with open(fp,'rb') as f:
-                await ctx.bot.send_audio(cid, f, title=title or "audio", performer=artist or "Unknown",
-                                         caption=f"{platform} <b>{title[:60]}</b>", parse_mode="HTML")
+                await ctx.bot.send_audio(
+                    cid, f,
+                    title=title or "audio",
+                    performer=artist or "Unknown",
+                    caption=f"{platform} <b>{title[:60]}</b>" if title else platform,
+                    parse_mode="HTML"
+                )
             await wm.delete()
-        else: await wm.edit_text("❌ فشل التحميل.")
+        else:
+            await wm.edit_text("❌ فشل التحميل.")
     except Exception as e:
         logger.error(f"[Music] {e}")
         await wm.edit_text(f"❌ فشل التحميل: {str(e)[:100]}")
     finally: shutil.rmtree(tmp, ignore_errors=True)
+
+
+async def tiktok_user_info(upd, ctx, username, cid):
+    """معلومات حساب تيك توك"""
+    msg = upd.message
+    username = username.lstrip('@').strip()
+    if not username:
+        return await msg.reply_text("❗ مثال: <code>تيك codexpert</code>", parse_mode="HTML")
+    wm = await msg.reply_text(f"🔍 جاري جلب معلومات @{username}...")
+
+    COUNTRY_FLAG = {
+        'IQ':'🇮🇶','SA':'🇸🇦','US':'🇺🇸','GB':'🇬🇧','AE':'🇦🇪','EG':'🇪🇬',
+        'TR':'🇹🇷','IR':'🇮🇷','RU':'🇷🇺','DE':'🇩🇪','FR':'🇫🇷','IN':'🇮🇳',
+        'CN':'🇨🇳','JP':'🇯🇵','KR':'🇰🇷','BR':'🇧🇷','KW':'🇰🇼','QA':'🇶🇦',
+        'BH':'🇧🇭','OM':'🇴🇲','JO':'🇯🇴','SY':'🇸🇾','LB':'🇱🇧','YE':'🇾🇪',
+        'LY':'🇱🇾','TN':'🇹🇳','DZ':'🇩🇿','MA':'🇲🇦','SD':'🇸🇩','PK':'🇵🇰',
+    }
+
+    def _fetch():
+        endpoints = [
+            f"https://www.tikwm.com/api/user/info?unique_id={username}&count=1",
+            f"https://tikwm.com/api/user/info?unique_id={username}",
+        ]
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0",
+            "Referer": "https://www.tikwm.com/",
+            "Accept": "application/json",
+        }
+        for ep in endpoints:
+            try:
+                r = requests.get(ep, headers=headers, timeout=20)
+                data = r.json()
+                if data.get('code') == 0:
+                    return data
+            except: continue
+        return {}
+
+    try:
+        data = await asyncio.get_running_loop().run_in_executor(None, _fetch)
+        if data.get('code') == 0 and data.get('data'):
+            d = data['data']
+            u = d.get('user', d)
+            stats = d.get('stats', u)
+            name = u.get('nickname') or u.get('name', username)
+            uid_str = str(u.get('id', '—'))
+            followers = (stats.get('followerCount') or u.get('followerCount') or d.get('fans') or 0)
+            following = (stats.get('followingCount') or u.get('followingCount') or d.get('following') or 0)
+            likes = (stats.get('heartCount') or u.get('heartCount') or stats.get('diggCount') or d.get('heart') or 0)
+            videos = (stats.get('videoCount') or u.get('videoCount') or d.get('video') or 0)
+            bio = u.get('signature','') or '—'
+            verified = "✅ موثق" if (u.get('verified') or u.get('isVerified')) else "❌ غير موثق"
+            private = "🔒 خاص" if (u.get('privateAccount') or u.get('secret')) else "🌐 عام"
+            avatar = u.get('avatarLarger') or u.get('avatarMedium') or u.get('avatarThumb') or u.get('avatar','')
+            region = (u.get('region') or u.get('location') or '').upper()
+            country_str = f"{COUNTRY_FLAG.get(region,'🌍')} {region}" if region else "🌍 غير معروف"
+            create_ts = u.get('createTime') or u.get('createtime') or 0
+            joined_str = ""
+            if create_ts:
+                try:
+                    import datetime
+                    joined_str = "\n📅 <b>تاريخ الانضمام:</b> " + datetime.datetime.fromtimestamp(int(create_ts)).strftime('%Y/%m/%d')
+                except: pass
+            txt = (
+                f"🎵 <b>معلومات تيك توك</b>\n\n"
+                f"👤 <b>الاسم:</b> {name}\n"
+                f"📛 <b>اليوزر:</b> @{username}\n"
+                f"🆔 <b>ID:</b> <code>{uid_str}</code>\n"
+                f"🌍 <b>الدولة:</b> {country_str}\n"
+                f"✅ <b>التوثيق:</b> {verified}\n"
+                f"🔒 <b>الحساب:</b> {private}\n"
+                f"👥 <b>المتابعون:</b> {followers:,}\n"
+                f"➡️ <b>يتابع:</b> {following:,}\n"
+                f"❤️ <b>الإعجابات:</b> {likes:,}\n"
+                f"🎬 <b>الفيديوهات:</b> {videos:,}\n"
+                f"📝 <b>البايو:</b> {bio[:150]}"
+                f"{joined_str}\n\n"
+                f"🔗 <a href='https://www.tiktok.com/@{username}'>فتح الحساب</a>"
+            )
+            await wm.delete()
+            if avatar:
+                try:
+                    await ctx.bot.send_photo(cid, avatar, caption=txt, parse_mode="HTML")
+                    return
+                except: pass
+            await msg.reply_text(txt, parse_mode="HTML")
+        else:
+            await wm.edit_text(f"❌ ما لقيت حساب @{username}.\nتأكد من اليوزرنيم.")
+    except Exception as e:
+        logger.error(f"[TT info] {e}")
+        await wm.edit_text(f"❌ خطأ: {str(e)[:100]}")
 
 async def cmd_help(upd, ctx):
     """أمر المساعدة"""
@@ -835,30 +969,21 @@ async def cmd_start(upd, ctx):
         except: await msg.reply_text("خطأ في رابط الهمسة.")
     else:
         name = msg.from_user.first_name
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📥 المواقع المدعومة", callback_data="cmd_dl"),
-             InlineKeyboardButton("🎮 التسلية والأوامر", callback_data="cmd_fun")],
-            [InlineKeyboardButton("👥 أوامر المجموعات", callback_data="cmd_admin")],
-            [InlineKeyboardButton("❓ مساعدة ودعم", url="https://t.me/snh_1")],
-        ])
         await msg.reply_text(
             f"أهلاً <b>{name}</b>! 👋\n\n"
-            "┌─────────────────────┐\n"
-            "│  📥 <b>بوت التحميل الذكي</b>  │\n"
-            "└─────────────────────┘\n\n"
-            "🎬 يوتيوب    🐦 X/تويتر\n"
-            "🎵 تيك توك   🇨🇳 دوين\n"
-            "📘 فيس بوك   📸 انستغرام\n"
-            "📌 بينترست   🎵 ساوند كلاود\n\n"
+            "📥 <b>المواقع المدعومة:</b>\n"
+            "🎬 يوتيوب  🐦 X/تويتر  🎵 تيك توك\n"
+            "🇨🇳 دوين  📘 فيس بوك  📸 انستغرام\n"
+            "📌 بينترست  🎵 ساوند كلاود  🎵 يوتيوب ميوزك\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "🤖 <b>ذكاء اصطناعي:قريبا...</b>\n"
-            "🌐 <b>ترجمة:</b> <code>ترجمة مرحبا</code>\n"
-            "🔢 <b>حاسبة:</b> <code>حساب 5*5</code>\n"
-            "🎵 <b>تيك توك:</b> <code>تيك @username</code>\n"
-            "🔄 <b>تحويل فيديو لصوت:</b> <code>تحويل</code>\n\n"
-            "💡 أرسل أي رابط وأنا أتكفله! 🚀",
-            parse_mode="HTML",
-            reply_markup=markup
+            "🌐 <code>ترجمة [نص]</code> — ترجمة للعربي\n"
+            "🔢 <code>حساب [عملية]</code> — حاسبة\n"
+            "🎵 <code>تيك @username</code> — معلومات تيك توك\n"
+            "🔄 <code>تحويل</code> — رد على فيديو لتحويله لصوت\n\n"
+            "👥 للمجموعات: أضفني مشرفاً واكتب <code>الاوامر</code>\n\n"
+            "💡 أرسل أي رابط وأنا أتكفله! 🚀\n"
+            "❓ /help — مساعدة",
+            parse_mode="HTML"
         )
 
 # ═══════════════════════════════════════════════════════════════════
