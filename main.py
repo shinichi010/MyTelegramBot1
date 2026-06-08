@@ -64,11 +64,11 @@ TEXT_FUN = (
 )
 TEXT_DL = (
     "📥 <b>التحميل — المواقع المدعومة:</b>\n\n"
-    "🎬 يوتيوب — اختيار جودة حقيقية\n"
-    "🐦 تويتر/X — أزرار جودة ✅\n"
+    "🎬 يوتيوب — مقاطع وصوت\n"
+    "🐦 تويتر/X — مقاطع وريلز\n"
     "🎵 تيك توك + 🇨🇳 دوين — فيديو وصور (بدون حد)\n"
-    "📘 فيس بوك — مقاطع ريلز بجودة صحيحة\n"
-    "📸 انستغرام — ريلز وصور وستوريات* ✅\n"
+    "📘 فيس بوك — مقاطع ريلز بافضل جودة\n"
+    "📸 انستغرام — ريلز وبوستات* \n"
     "📌 بينترست — فيديو وصور\n"
     "🎵 ساوند كلاود — تحميل موسيقى MP3\n"
     "🎵 يوتيوب ميوزك — تحميل MP3 320kbps\n\n"
@@ -258,25 +258,39 @@ def _base_opts(mid):
     return opts
 
 def get_qualities(url: str):
+    """إرجاع (format_map, info) — format_map = {height: format_id}"""
     is_yt = bool(re.search(r'(youtube\.com|youtu\.be)', url))
     try:
         opts = {**_base_opts(0), 'skip_download': True}
         opts.pop('progress_hooks')
         if is_yt:
-            opts['extractor_args'] = {'youtube': {'player_client': ['android', 'ios', 'mweb']}}
+            # ios يعطي أفضل جودة لـ YouTube
+            opts['extractor_args'] = {'youtube': {'player_client': ['ios', 'android', 'web']}}
             opts['http_headers']['User-Agent'] = 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            heights = {f.get('height') for f in info.get('formats',[]) if f.get('height') and f.get('vcodec','none') != 'none'}
-            return sorted(heights, reverse=True), info
+            format_map = {}  # {height: format_id}
+            for f in info.get('formats', []):
+                h = f.get('height')
+                vcodec = f.get('vcodec','none')
+                if not h or vcodec == 'none': continue
+                tbr = f.get('tbr') or f.get('vbr') or 0
+                if h not in format_map or tbr > format_map[h]['tbr']:
+                    format_map[h] = {'id': f['format_id'], 'tbr': tbr, 'ext': f.get('ext','mp4')}
+            return format_map, info
     except Exception as e:
         logger.error(f"[qualities] {e}")
-        return [], None
+        return {}, None
 
-def build_quality_kb(heights, uid, uhash, emoji="🎬"):
+def build_quality_kb(format_map, uid, uhash, emoji="🎬"):
+    """format_map = {height: {'id':..., 'tbr':...}} أو مجرد list of heights"""
     standard = [2160,1440,1080,720,480,360,240,144]
-    avail = [q for q in standard if any(h >= q*0.85 for h in heights)] if heights else [720,480,360]
-    avail = avail[:6]
+    if isinstance(format_map, dict):
+        avail = sorted([h for h in format_map if h], reverse=True)
+        avail = [q for q in standard if any(abs(a-q)<=q*0.15 for a in avail)]
+    else:
+        avail = [q for q in standard if any(h >= q*0.85 for h in (format_map or []))]
+    avail = avail[:6] if avail else [720,480,360]
     rows, row = [], []
     for q in avail:
         row.append(InlineKeyboardButton(f"{emoji} {q}p", callback_data=f"dl_v{q}_{uid}_{uhash}"))
@@ -300,8 +314,26 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
         opts['postprocessors'] = [{'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':'192'}]
     else:
         h = int(quality) if quality and str(quality).isdigit() else 720
-        opts['format'] = (f'bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/'
-                          f'bestvideo[height<={h}]+bestaudio/best[height<={h}]/best[ext=mp4]/best')
+        # استخدم format_id المخزن إذا متوفر (يضمن الجودة الصحيحة)
+        fmt_info = None
+        if ctx:
+            raw_data = ctx.bot_data.get(url[:60] + '_fmt', {}) if url else {}
+            if isinstance(raw_data, dict):
+                # ابحث عن أقرب height
+                for stored_h, fi in raw_data.items():
+                    if abs(int(stored_h) - h) <= h * 0.15:
+                        fmt_info = fi; break
+        if fmt_info and fmt_info.get('id'):
+            vid_id = fmt_info['id']
+            opts['format'] = (f'{vid_id}+bestaudio[ext=m4a]/'
+                              f'{vid_id}+bestaudio/'
+                              f'bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/'
+                              f'bestvideo[height<={h}]+bestaudio/best[height<={h}]')
+        else:
+            opts['format'] = (f'bestvideo[height<={h}]+bestaudio/'
+                              f'best[height<={h}][ext=mp4]/best[height<={h}]/'
+                              f'bestvideo+bestaudio/best')
+            opts['format_sort'] = [f'res:{h}', 'ext:mp4', '+codec:h264']
         opts['merge_output_format'] = 'mp4'
 
     active_dl[mid] = "0%"
@@ -357,14 +389,19 @@ def tiktok_api(url: str):
 async def yt_handler(upd, ctx, url, uid):
     msg = upd.message
     wm = await msg.reply_text("🔍 جاري جلب معلومات الفيديو...")
-    heights, info = await asyncio.get_running_loop().run_in_executor(None, lambda: get_qualities(url))
+    format_map, info = await asyncio.get_running_loop().run_in_executor(None, lambda: get_qualities(url))
+    heights = format_map  # يدعم الاثنين
     if not info:
         return await wm.edit_text(
             "❌ فشل جلب بيانات اليوتيوب.\n\n"
             "• تأكد أن الرابط عام وغير محدود بالمنطقة",
             parse_mode="HTML"
         )
-    uhash = str(random.randint(10000,99999)); ctx.bot_data[uhash] = url
+    uhash = str(random.randint(10000,99999))
+    ctx.bot_data[uhash] = url
+    # خزّن format_map للاستخدام عند التحميل
+    if isinstance(heights, dict):
+        ctx.bot_data[url[:60]+'_fmt'] = heights
     dur = info.get('duration',0)
     cap = (f"🎬 <b>{info.get('title','')[:60]}</b>\n"
            f"⏱ {dur//60}:{dur%60:02d} | 👁 {info.get('view_count',0):,}")
@@ -467,13 +504,13 @@ async def x_handler(upd, ctx, url, uid):
                 await ctx.bot.send_video(cid,f,caption="✅ X 🐦",supports_streaming=True)
             await wm.delete()
         else:
-            no_cookie_hint = "\n💡 اذا تكررت المشكلة انتظر لحين حل المشكلة من قبل المطور" if not has_cookies else ""
+            no_cookie_hint = "\n💡 اذا تكررت المشكلة ارسلها للحساب @shn_1 " if not has_cookies else ""
             await wm.edit_text(f"❌ فشل التحميل من X.\nالتغريدة خاصة أو محذوفة.{no_cookie_hint}")
         if tmp: shutil.rmtree(tmp, ignore_errors=True)
         return
 
     uhash = str(random.randint(10000,99999)); ctx.bot_data[uhash] = url
-    kb = build_quality_kb(sorted(heights,reverse=True), uid, uhash, "🐦")
+    kb = build_quality_kb(list(heights), uid, uhash, "🐦")
     cap = f"🐦 <b>{info.get('title','مقطع X')[:60]}</b>\n\nاختر الجودة:"
     try:
         if info.get('thumbnail'):
@@ -522,7 +559,7 @@ async def tiktok_handler(upd, ctx, url, cid, reply_id):
             return await wm.delete()
         except Exception as e: logger.error(f"[TikTok send] {e}")
     # محاولة 2: yt-dlp مباشرة (يدعم تيك توك + دوين)
-    await wm.edit_text("⏳ اعادة محاولة تحميل المحتوى...")
+    await wm.edit_text("⏳ محاولة بديلة...")
     is_douyin = 'douyin.com' in url
 
     def _dl_tiktok():
@@ -620,7 +657,7 @@ async def insta_handler(upd, ctx, url, cid):
         await wm.delete()
     except Exception as e:
         logger.error(f"[Insta] {e}")
-        hint = "\n💡 اذا تكررت المشكلة انتظر لحين حل المشكلة من قبل المطور" if not has_cookies else ""
+        hint = "\n💡 اذا تكررت المشكلة ارسلها للحساب @shn_1 " if not has_cookies else ""
         await wm.edit_text(f"❌ فشل التحميل من انستغرام.{hint}")
     finally: shutil.rmtree(tmp, ignore_errors=True)
 
@@ -732,6 +769,33 @@ async def music_handler(upd, ctx, url, cid, platform="🎵"):
         await wm.edit_text(f"❌ فشل التحميل: {str(e)[:100]}")
     finally: shutil.rmtree(tmp, ignore_errors=True)
 
+async def cmd_help(upd, ctx):
+    """أمر المساعدة"""
+    msg = upd.message
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("💬 تواصل مع المطور", url="https://t.me/snh_1")
+    ]])
+    await msg.reply_text(
+        "❓ <b>مساعدة ودعم</b>\n\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        "📥 <b>التحميل:</b>\n"
+        "فقط أرسل الرابط مباشرة وسيتم التحميل تلقائياً\n\n"
+        "🔧 <b>أوامر عامة:</b>\n"
+        "• قريبا... — الذكاء الاصطناعي\n"
+        "• <code>ترجمة [نص]</code> — ترجمة لعربي\n"
+        "• <code>حساب [عملية]</code> — حاسبة\n"
+        "• <code>تيك @username</code> — معلومات تيك توك\n"
+        "• <code>تحويل</code> — رد على فيديو لتحويله لصوت\n"
+        "• <code>نرد</code> / <code>عملة</code> / <code>نكتة</code> / <code>ري</code>\n\n"
+        "👥 <b>أوامر المجموعات:</b>\n"
+        "• اكتب <code>الاوامر</code> في الكروب\n\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        "⚠️ <b>واجهت مشكلة؟</b>\n"
+        "تواصل مع المطور مباشرة 👇",
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
 async def cmd_ping(upd, ctx):
     """فحص حالة البوت"""
     import time
@@ -771,25 +835,30 @@ async def cmd_start(upd, ctx):
         except: await msg.reply_text("خطأ في رابط الهمسة.")
     else:
         name = msg.from_user.first_name
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 المواقع المدعومة", callback_data="cmd_dl"),
+             InlineKeyboardButton("🎮 التسلية والأوامر", callback_data="cmd_fun")],
+            [InlineKeyboardButton("👥 أوامر المجموعات", callback_data="cmd_admin")],
+            [InlineKeyboardButton("❓ مساعدة ودعم", url="https://t.me/snh_1")],
+        ])
         await msg.reply_text(
             f"أهلاً <b>{name}</b>! 👋\n\n"
+            "┌─────────────────────┐\n"
+            "│  📥 <b>بوت التحميل الذكي</b>  │\n"
+            "└─────────────────────┘\n\n"
+            "🎬 يوتيوب    🐦 X/تويتر\n"
+            "🎵 تيك توك   🇨🇳 دوين\n"
+            "📘 فيس بوك   📸 انستغرام\n"
+            "📌 بينترست   🎵 ساوند كلاود\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "📥 <b>التحميل المدعوم:</b>\n"
-            "🎬 يوتيوب   🐦 تويتر/X\n"
-            "🎵 تيك توك  🇨🇳 دوين\n"
-            "📘 فيس بوك  📸 انستغرام\n"
-            "📌 بينترست  🎵 ساوند كلاود\n"
-            "🎵 يوتيوب ميوزك\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "🛠 <b>أوامر مفيدة:</b>\n"
-            "🌐 <code>ترجمة [نص]</code> — ترجمة للعربي\n"
-            "🔢 <code>حساب [عملية]</code> — حاسبة\n"
-            "🎵 <code>تيك @username</code> — معلومات تيك توك\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "👥 <b>للمجموعات:</b>\n"
-            "أضفني مشرفاً واكتب <code>الاوامر</code>\n\n"
-            "💡 فقط أرسل أي رابط وأنا أتكفله! 😎",
-            parse_mode="HTML"
+            "🤖 <b>ذكاء اصطناعي:قريبا...</b>\n"
+            "🌐 <b>ترجمة:</b> <code>ترجمة مرحبا</code>\n"
+            "🔢 <b>حاسبة:</b> <code>حساب 5*5</code>\n"
+            "🎵 <b>تيك توك:</b> <code>تيك @username</code>\n"
+            "🔄 <b>تحويل فيديو لصوت:</b> <code>تحويل</code>\n\n"
+            "💡 أرسل أي رابط وأنا أتكفله! 🚀",
+            parse_mode="HTML",
+            reply_markup=markup
         )
 
 # ═══════════════════════════════════════════════════════════════════
@@ -872,8 +941,39 @@ async def btn_cb(upd, ctx):
                 await q.message.delete()
             except Exception as e: await em(f"❌ فشل الرفع: {str(e)[:80]}")
         else:
-            await em("❌ فشل التحميل.\n• جرب جودة أقل")
+            await em("❌ فشل التحميل.\n• جرب جودة أقل\n• أو جرب لاحقاً")
         if tmp: shutil.rmtree(tmp, ignore_errors=True)
+        return
+
+    # تحويل فيديو لصوت (من الخاص)
+    if d.startswith("convert_audio_"):
+        mid = int(d.split("_")[-1])
+        await q.answer()
+        await q.edit_message_text("🔄 جاري الاستخراج...")
+        # البوت يحتاج يجيب الفيديو من الرسالة الأصلية
+        try:
+            msg_obj = q.message.reply_to_message
+            if msg_obj:
+                media = msg_obj.video or msg_obj.document
+                if media:
+                    tf = await media.get_file()
+                    inp = f"/tmp/conv_{mid}.mp4"; out = f"/tmp/conv_{mid}.mp3"
+                    await tf.download_to_drive(custom_path=inp)
+                    subprocess.run([FFMPEG,"-i",inp,"-q:a","0","-map","a",out,"-y"],capture_output=True,timeout=180)
+                    if os.path.exists(out):
+                        with open(out,'rb') as f: await ctx.bot.send_audio(q.message.chat_id,f,title="audio")
+                        await q.message.delete()
+                    else: await q.edit_message_text("❌ الملف ما يحتوي صوت.")
+                    for p in [inp,out]:
+                        try: os.remove(p)
+                        except: pass
+                else: await q.edit_message_text("❌ ما لقيت الفيديو.")
+            else: await q.edit_message_text("❌ ما لقيت الفيديو الأصلي.")
+        except Exception as e: await q.edit_message_text(f"❌ خطأ: {str(e)[:80]}")
+        return
+    if d == "convert_cancel":
+        await q.answer("تم الإلغاء")
+        await q.message.delete()
         return
 
     # إكس أو
@@ -1097,10 +1197,45 @@ async def handle_msg(upd, ctx):
         if re.search(r'(x\.com|twitter\.com)',text,re.I): await x_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
         if re.search(r'(tiktok\.com|vm\.tiktok\.com|douyin\.com)',text,re.I): await tiktok_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid,msg.message_id); return
         if re.search(r'(facebook\.com|fb\.watch|fb\.com)',text,re.I): await fb_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
-        if re.search(r'(pinterest\.com|pin\.it)',text,re.I): await pinterest_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid); return
+        if re.search(r'(pinterest\.com|pin\.it)',text,re.I): await pinterest_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid); return  # auto best
         m=re.match(r'^ستوري\s+@?(\S+)',text,re.I)
         if m: await insta_stories_handler(upd,ctx,m.group(1),cid); return
         if re.search(r'instagram\.com',text,re.I): await insta_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid); return
+
+        # تحويل فيديو لصوت بالخاص
+        if text == "تحويل":
+            rm = msg.reply_to_message
+            if not rm:
+                return await msg.reply_text(
+                    "❗ رد على مقطع فيديو لتحويله لصوت.\n"
+                    "أو أرسل الفيديو مباشرة وسأطلب منك التأكيد 🎵"
+                )
+            media = rm.video or rm.document
+            if not media:
+                return await msg.reply_text("❗ رد على فيديو أو ملف فيديو.")
+            wm = await msg.reply_text("🔄 جاري استخراج الصوت...")
+            try:
+                tf = await media.get_file()
+                inp = f"/tmp/vi_{msg.message_id}.mp4"
+                out = f"/tmp/ao_{msg.message_id}.mp3"
+                await tf.download_to_drive(custom_path=inp)
+                subprocess.run([FFMPEG,"-i",inp,"-q:a","0","-map","a",out,"-y"], capture_output=True, timeout=180)
+                if os.path.exists(out):
+                    fn = getattr(media,'file_name',None) or f"audio_{msg.message_id}"
+                    with open(out,'rb') as a: await msg.reply_audio(a, title=fn.rsplit('.',1)[0])
+                    await wm.delete()
+                else:
+                    await wm.edit_text("❌ الملف ما يحتوي صوت.")
+            except subprocess.TimeoutExpired:
+                await wm.edit_text("❌ الملف كبير جداً.")
+            except Exception as e:
+                await wm.edit_text(f"❌ فشل: {str(e)[:100]}")
+            finally:
+                for p in [inp, out]:
+                    try:
+                        if os.path.exists(p): os.remove(p)
+                    except: pass
+            return
 
         # ترجمة + حاسبة بالخاص
         if text.startswith("ترجمة "):
@@ -1133,7 +1268,7 @@ async def handle_msg(upd, ctx):
                     "💡 <b>شو أقدر أسويلك؟</b>\n\n"
                     "📥 أرسل رابط للتحميل (يوتيوب، تيك توك، X، فيس بوك، انستغرام، بينترست)\n"
                     "🎵 يوتيوب ميوزك / ساوند كلاود — أرسل الرابط مباشرة\n"
-                    "🤖 الذكاء الاصطناعي قريبا....\n"
+                    "🤖 <code>الذكاء الاصطناعي — قريبا...\n"
                     "🌐 <code>ترجمة [نص]</code> — ترجمة للعربي\n"
                     "🔢 <code>حساب 5*5+2</code> — حاسبة\n"
                     "🎵 <code>تيك @username</code> — معلومات تيك توك",
@@ -1446,11 +1581,27 @@ def main():
     token = os.environ.get("BOT_TOKEN","8159446452:AAHvUE5aEvuTmGfwAYAV7EqfshKD9Nv-B5o")
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start",cmd_start))
+    app.add_handler(CommandHandler("help",cmd_help))
     app.add_handler(CommandHandler("ping",cmd_ping))
     app.add_handler(CommandHandler("id",cmd_id))
-    app.add_handler(CallbackQueryHandler(btn_cb,pattern=r"^(show_w_|cmd_|dl_|ttt_)"))
+    app.add_handler(CallbackQueryHandler(btn_cb,pattern=r"^(show_w_|cmd_|dl_|ttt_|convert_)"))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS,welcome_handler))
     app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.TEXT,edit_handler))
+    # تحويل الفيديو المُرسل مباشرة بالخاص
+    async def _private_video_handler(upd, ctx):
+        msg = upd.message
+        if msg.chat.type != 'private': return
+        media = msg.video or msg.document
+        if not media: return
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🎵 تحويل لصوت MP3", callback_data=f"convert_audio_{msg.message_id}"),
+            InlineKeyboardButton("❌ إلغاء", callback_data="convert_cancel")
+        ]])
+        await msg.reply_text("📹 استلمت الفيديو! شو تريد؟", reply_markup=markup)
+
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & (filters.VIDEO | filters.Document.VIDEO),
+        _private_video_handler), group=0)
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS & (filters.Sticker.ALL | filters.ANIMATION | filters.VIDEO | filters.PHOTO),
         media_filter), group=0)
