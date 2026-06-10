@@ -899,7 +899,8 @@ async def music_handler(upd, ctx, url, cid, platform="🎵"):
     finally: shutil.rmtree(tmp, ignore_errors=True)
 
 async def spotify_handler(upd, ctx, url, cid):
-    """سبوتيفاي — تحميل عبر spotdl بأعلى جودة متوفرة مع إصلاح مسار ffmpeg والتقارير"""
+    """سبوتيفاي — تحميل عبر spotdl بأعلى جودة متوفرة مع إصلاح مسار ffmpeg والتقارير وتشفير الرموز"""
+    import html  # مكتبة أساسية لتنظيف النصوص ومنع أخطاء تليجرام
     msg = upd.message
     wm = await msg.reply_text("🎧 جاري البحث عن المقطع وتحميله من سبوتيفاي...")
     tmp = tempfile.mkdtemp()
@@ -939,12 +940,14 @@ async def spotify_handler(upd, ctx, url, cid):
         files, returncode, stdout, stderr = await asyncio.get_running_loop().run_in_executor(None, _dl)
         
         if not files:
-            # تجميع التقرير الكامل من المخرجات والأخطاء لمعرفة السبب الحقيقي فوراً
+            # تجميع التقرير وتمريره عبر html.escape لتفادي مشكلة تليجرام تماماً
             error_log = ""
             if stderr and stderr.strip():
-                error_log += f"<b>⚙️ STDERR:</b>\n<code>{stderr.strip()[:250]}</code>\n\n"
+                safe_stderr = html.escape(stderr.strip()[:300])
+                error_log += f"<b>⚙️ STDERR:</b>\n<code>{safe_stderr}</code>\n\n"
             if stdout and stdout.strip():
-                error_log += f"<b>📊 STDOUT:</b>\n<code>{stdout.strip()[:250]}</code>"
+                safe_stdout = html.escape(stdout.strip()[:300])
+                error_log += f"<b>📊 STDOUT:</b>\n<code>{safe_stdout}</code>"
             
             if not error_log:
                 error_log = "لم يتم استخراج أي ملفات صوتية (قد يكون الرابط خاصاً أو السيرفر محظوراً من يوتيوب)."
