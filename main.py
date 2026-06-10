@@ -914,16 +914,18 @@ async def spotify_handler(upd, ctx, url, cid):
             _shutil.which(os.path.join(os.path.dirname(sys.executable), 'spotdl')) or
             None
         )
+        # تم تغيير --output إلى --path لتحديد مجلد الحفظ الصحيح
         if spotdl_bin:
-            cmd = [spotdl_bin, url, '--output', tmp, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
+            cmd = [spotdl_bin, url, '--path', tmp, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
         else:
             # fallback: شغّله كـ Python module
-            cmd = [sys.executable, '-m', 'spotdl', url, '--output', tmp, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
+            cmd = [sys.executable, '-m', 'spotdl', url, '--path', tmp, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
+            
         logger.info(f"[spotdl] cmd: {cmd[0]}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
             logger.error(f"[spotdl] stderr: {result.stderr[:500]}")
-        files = [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith('.mp3')]
+        files = [os.path.join(tmp, f) for f in os.listdir(tmp) if f.endswith('.mp3')]
         return files
 
     try:
@@ -931,7 +933,7 @@ async def spotify_handler(upd, ctx, url, cid):
         if not files:
             return await wm.edit_text(
                 "❌ فشل التحميل من سبوتيفاي.\n"
-                "تأكد من تثبيت: <code>spotdl</code> في requirements.txt",
+                "تأكد من إعدادات الرابط أو السيرفر.",
                 parse_mode="HTML"
             )
         await wm.edit_text(f"📤 جاري رفع {len(files)} مقطع...")
@@ -952,8 +954,6 @@ async def spotify_handler(upd, ctx, url, cid):
         logger.error(f"[Spotify] {e}")
         await wm.edit_text(f"❌ خطأ: {str(e)[:100]}")
     finally: shutil.rmtree(tmp, ignore_errors=True)
-
-async def tiktok_user_info(upd, ctx, username, cid):
     """معلومات حساب تيك توك"""
     msg = upd.message
     username = username.lstrip('@').strip()
