@@ -68,9 +68,7 @@ TEXT_DL = (
     "🐦 تويتر/X — مقاطع وريلز\n"
     "🎵 تيك توك + 🇨🇳 دوين — فيديو وصور (بدون حد)\n"
     "📘 فيس بوك — مقاطع ريلز بافضل جودة\n"
-    "🎵 سبوتيفاي — تحميل موسيقى MP3\n"
-    "🎬 ثريدز - مقاطع وصور\n"
-    "📸  انستغرام — ريلز وستوريات* \n"
+    "📸 انستغرام — ريلز وبوستات* \n"
     "📌 بينترست — فيديو وصور\n"
     "🎵 ساوند كلاود — تحميل موسيقى MP3\n"
     "🎵 يوتيوب ميوزك — تحميل MP3 320kbps\n\n"
@@ -398,33 +396,39 @@ async def yt_handler(upd, ctx, url, uid):
     wm = await msg.reply_text("🔍 جاري جلب معلومات الفيديو من يوتيوب...")
 
     def _get_info():
-        # جرب عدة player clients
-        for client in [['ios'], ['android'], ['mweb'], ['web']]:
+        # tv_embedded يتجاوز bot detection بدون كوكيز
+        clients = [
+            ['tv_embedded'],
+            ['ios'],
+            ['android'],
+            ['mweb'],
+            ['web_embedded'],
+        ]
+        if os.path.exists('cookies.txt'):
+            clients.insert(0, ['web'])  # web أفضل مع كوكيز
+        for client in clients:
             try:
                 opts = {
                     'quiet': True, 'noplaylist': True, 'nocheckcertificate': True,
                     'skip_download': True, 'geo_bypass': True,
                     'extractor_args': {'youtube': {'player_client': client}},
-                    'http_headers': {
-                        'User-Agent': (
-                            'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
-                            if 'android' in client else
-                            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36'
-                        )
-                    },
+                    'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0'},
                 }
+                if os.path.exists('cookies.txt'): opts['cookiefile'] = 'cookies.txt'
                 with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
                     if info: return info
             except Exception as e:
                 logger.warning(f"[YT] client {client}: {e}")
+                continue
         return None
 
     info = await asyncio.get_running_loop().run_in_executor(None, _get_info)
     if not info:
         return await wm.edit_text(
             "❌ فشل جلب بيانات اليوتيوب.\n"
-            "• تأكد أن الرابط عام\n",
+            "• شغّل: <code>pip install -U yt-dlp</code> على Railway\n"
+            "• أو تأكد أن الرابط عام",
             parse_mode="HTML"
         )
 
@@ -554,7 +558,7 @@ async def x_handler(upd, ctx, url, uid):
                 await ctx.bot.send_video(cid, f, caption=f"🐦 {title[:60]}" if title else "🐦 X", supports_streaming=True)
             await wm.delete()
         else:
-            hint = "\n💡 تأكد من أن التغريدة عامة" if not has_cookies else ""
+            hint = "\n💡 تأكد من الكوكيز أو أن التغريدة عامة" if not has_cookies else ""
             await wm.edit_text(f"❌ فشل التحميل من X.{hint}")
     except Exception as e:
         active_dl.pop(msg.message_id, None); prog.cancel()
@@ -648,8 +652,9 @@ async def insta_handler(upd, ctx, url, cid):
     # ستوريات بدون كوكيز
     if is_story and not has_cookies:
         return await msg.reply_text(
-            "🔒 <b>حدث خطأ في تحميل الستوري</b>\n\n"
-            "اعد المحاولة لاحقا 🔄️",
+            "🔒 <b>تحميل الستوريات يحتاج كوكيز انستغرام</b>\n\n"
+            "الكوكيز غير موجودة على السيرفر حالياً.\n"
+            "تأكد من إضافة <code>COOKIES_DATA</code> بـ Railway وإعادة النشر.",
             parse_mode="HTML"
         )
 
@@ -710,8 +715,9 @@ async def insta_stories_handler(upd, ctx, username, cid):
 
     if not has_cookies:
         return await msg.reply_text(
-            "🔒 <b>حدث خطأ في تحميل الستوري</b>\n\n"
-            "اعد المحاولة لاحقا 🔄️",
+            "🔒 <b>تحميل الستوريات يحتاج كوكيز انستغرام</b>\n\n"
+            "أضف <code>COOKIES_DATA</code> من انستغرام بنفس طريقة X.\n"
+            "بعدها يشتغل تلقائياً! ✅",
             parse_mode="HTML"
         )
 
@@ -744,8 +750,8 @@ async def insta_stories_handler(upd, ctx, username, cid):
         if not total:
             return await wm.edit_text(
                 f"❌ ما لقيت ستوريات لـ @{username}\n"
-                "• ربما الحساب خاص 🔒\n"
-                "• او الستوريات قد تكون منتهية"
+                "• الحساب خاص؟ تأكد أن الكوكيز من حساب يتابعه\n"
+                "• الستوريات قد تكون منتهية"
             )
         await wm.edit_text(f"📤 جاري رفع {total} ستوري...")
         for v in videos[:5]:
@@ -764,8 +770,21 @@ async def insta_stories_handler(upd, ctx, username, cid):
                 if i+10 < len(images): await asyncio.sleep(1)
         await wm.delete()
     except Exception as e:
-        logger.error(f"[Stories] {e}")
-        await wm.edit_text(f"❌ فشل: {str(e)[:150]}")
+        err = str(e)
+        logger.error(f"[Stories] {err}")
+        if 'login' in err.lower() or 'checkpoint' in err.lower() or 'authentication' in err.lower():
+            await wm.edit_text(
+                "🔒 <b>انستغرام يطلب تسجيل دخول</b>\n\n"
+                "الكوكيز موجودة بس انستغرام يرفضها.\n"
+                "جرب تجيب كوكيز جديدة من المتصفح بعد تسجيل الدخول مجدداً.",
+                parse_mode="HTML"
+            )
+        elif 'private' in err.lower():
+            await wm.edit_text("❌ هذا الحساب خاص ولا تتابعه.")
+        elif 'not found' in err.lower() or '404' in err:
+            await wm.edit_text("❌ ما لقيت هذه الستوريات — ربما انتهت أو الحساب مو موجود.")
+        else:
+            await wm.edit_text(f"❌ فشل تحميل الستوريات:\n<code>{err[:150]}</code>", parse_mode="HTML")
     finally: shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -852,7 +871,7 @@ async def music_handler(upd, ctx, url, cid, platform="🎵"):
         'http_headers':{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36'},
     }
     if is_yt:
-        opts['extractor_args'] = {'youtube': {'player_client': ['ios', 'android']}}
+        opts['extractor_args'] = {'youtube': {'player_client': ['tv_embedded', 'ios', 'android']}}
     def _dl():
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -888,17 +907,22 @@ async def spotify_handler(upd, ctx, url, cid):
     tmp = tempfile.mkdtemp()
 
     def _dl():
-        # spotdl يحتاج يكون مثبت: pip install spotdl
-        cmd = [
-            'spotdl', url,
-            '--output', tmp,
-            '--format', 'mp3',
-            '--bitrate', '320k',
-            '--threads', '1',
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        import sys, shutil as _shutil
+        # ابحث عن spotdl بعدة طرق
+        spotdl_bin = (
+            _shutil.which('spotdl') or
+            _shutil.which(os.path.join(os.path.dirname(sys.executable), 'spotdl')) or
+            None
+        )
+        if spotdl_bin:
+            cmd = [spotdl_bin, url, '--output', tmp, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
+        else:
+            # fallback: شغّله كـ Python module
+            cmd = [sys.executable, '-m', 'spotdl', url, '--output', tmp, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
+        logger.info(f"[spotdl] cmd: {cmd[0]}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            logger.error(f"[spotdl] {result.stderr[:300]}")
+            logger.error(f"[spotdl] stderr: {result.stderr[:500]}")
         files = [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith('.mp3')]
         return files
 
@@ -907,7 +931,7 @@ async def spotify_handler(upd, ctx, url, cid):
         if not files:
             return await wm.edit_text(
                 "❌ فشل التحميل من سبوتيفاي.\n"
-                "خطأ 402 ✖️\n",
+                "تأكد من تثبيت: <code>spotdl</code> في requirements.txt",
                 parse_mode="HTML"
             )
         await wm.edit_text(f"📤 جاري رفع {len(files)} مقطع...")
@@ -919,7 +943,7 @@ async def spotify_handler(upd, ctx, url, cid):
     except FileNotFoundError:
         await wm.edit_text(
             "❌ spotdl غير مثبت!\n"
-            "خطاء 404 ✖️\n",
+            "أضف <code>spotdl</code> لملف <code>requirements.txt</code> وأعد النشر.",
             parse_mode="HTML"
         )
     except subprocess.TimeoutExpired:
@@ -1508,8 +1532,8 @@ async def handle_msg(upd, ctx):
             else:
                 await msg.reply_text(
                     "💡 <b>شو أقدر أسويلك؟</b>\n\n"
-                    "📥 أرسل رابط للتحميل (يوتيوب، تيك توك، ثريدز X، فيس بوك، انستغرام، بينترست)\n"
-                    "🎵 يوتيوب ميوزك / ساوند كلاود / سبوتيفاي — أرسل الرابط مباشرة\n"
+                    "📥 أرسل رابط للتحميل (يوتيوب، تيك توك، X، فيس بوك، انستغرام، بينترست)\n"
+                    "🎵 يوتيوب ميوزك / ساوند كلاود — أرسل الرابط مباشرة\n"
                     "🤖 <code>الذكاء الاصطناعي — قريبا...\n"
                     "🌐 <code>ترجمة [نص]</code> — ترجمة للعربي\n"
                     "🔢 <code>حساب 5*5+2</code> — حاسبة\n"
