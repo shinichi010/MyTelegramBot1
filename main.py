@@ -996,6 +996,8 @@ async def spotify_handler(upd, ctx, url, cid):
         await wm.edit_text(f"❌ خطأ غير متوقع: {str(e)[:100]}")
     finally: 
         shutil.rmtree(tmp, ignore_errors=True)
+
+async def tiktok_handler(upd, ctx, username, cid):
     """معلومات حساب تيك توك"""
     msg = upd.message
     username = username.lstrip('@').strip()
@@ -1046,8 +1048,11 @@ async def spotify_handler(upd, ctx, url, cid):
             verified = "✅ موثق" if (u.get('verified') or u.get('isVerified')) else "❌ غير موثق"
             private = "🔒 خاص" if (u.get('privateAccount') or u.get('secret')) else "🌐 عام"
             avatar = u.get('avatarLarger') or u.get('avatarMedium') or u.get('avatarThumb') or u.get('avatar','')
-            region = (u.get('region') or u.get('location') or '').upper()
+            
+            # ✨ التعديل والاصلاح هنا: جعلناه يبحث في d أولاً ثم u لضمان جلب الدولة بنجاح
+            region = (d.get('region') or u.get('region') or d.get('location') or u.get('location') or '').upper()
             country_str = f"{COUNTRY_FLAG.get(region,'🌍')} {region}" if region else "🌍 غير معروف"
+            
             create_ts = u.get('createTime') or u.get('createtime') or 0
             joined_str = ""
             if create_ts:
