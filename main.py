@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════
 WA3ED_LIST = [
     "عيونها السود والبيض 👀",
-    " هلا بالحلو\ة 🌸",
+    " هلا بالحلو \ ة 🌸",
     "مالي خلقك 😏",
     "اتسرسح منا وليدي 😤",
     "وعد هسه مشغولة 😅",
@@ -68,7 +68,9 @@ TEXT_DL = (
     "🐦 تويتر/X — مقاطع وريلز\n"
     "🎵 تيك توك + 🇨🇳 دوين — فيديو وصور (بدون حد)\n"
     "📘 فيس بوك — مقاطع ريلز بافضل جودة\n"
-    "📸 انستغرام — ريلز وبوستات* \n"
+    "🎵 سبوتيفاي — تحميل موسيقى MP3\n"
+    "🎬 ثريدز - مقاطع وصور\n"
+    "📸  انستغرام — ريلز وستوريات* \n"
     "📌 بينترست — فيديو وصور\n"
     "🎵 ساوند كلاود — تحميل موسيقى MP3\n"
     "🎵 يوتيوب ميوزك — تحميل MP3 320kbps\n\n"
@@ -311,7 +313,12 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
 
     if media_type == "audio":
         opts['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
-        opts['postprocessors'] = [{'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':'320'}]
+        opts['writethumbnail'] = True
+        opts['postprocessors'] = [
+            {'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':'320'},
+            {'key':'FFmpegMetadata','add_metadata':True},
+            {'key':'EmbedThumbnail'},
+        ]
     else:
         h = int(quality) if quality and str(quality).isdigit() else 720
         # استخدم format_id المخزن إذا متوفر (يضمن الجودة الصحيحة)
@@ -417,8 +424,7 @@ async def yt_handler(upd, ctx, url, uid):
     if not info:
         return await wm.edit_text(
             "❌ فشل جلب بيانات اليوتيوب.\n"
-            "• شغّل: <code>pip install -U yt-dlp</code> على Railway\n"
-            "• أو تأكد أن الرابط عام",
+            "• تأكد أن الرابط عام\n",
             parse_mode="HTML"
         )
 
@@ -548,7 +554,7 @@ async def x_handler(upd, ctx, url, uid):
                 await ctx.bot.send_video(cid, f, caption=f"🐦 {title[:60]}" if title else "🐦 X", supports_streaming=True)
             await wm.delete()
         else:
-            hint = "\n💡 تأكد من الكوكيز أو أن التغريدة عامة" if not has_cookies else ""
+            hint = "\n💡 تأكد من أن التغريدة عامة" if not has_cookies else ""
             await wm.edit_text(f"❌ فشل التحميل من X.{hint}")
     except Exception as e:
         active_dl.pop(msg.message_id, None); prog.cancel()
@@ -634,17 +640,16 @@ async def tiktok_handler(upd, ctx, url, cid, reply_id):
     if tmp: shutil.rmtree(tmp, ignore_errors=True)
 
 async def insta_handler(upd, ctx, url, cid):
-    """انستغرام — ريلز وصور وبوستات"""
+    """انستغرام — ريلز + صور + ستوريات (مع كوكيز)"""
     msg = upd.message
     has_cookies = os.path.exists('cookies.txt')
+    is_story = '/stories/' in url
 
-    # ستوريات — قريباً
-    if '/stories/' in url:
+    # ستوريات بدون كوكيز
+    if is_story and not has_cookies:
         return await msg.reply_text(
-            "🛠 <b>نعمل على دعم تحميل ستوريات انستغرام!</b>\n\n"
-            "هذه الميزة قيد التطوير الحين ⚙️\n"
-            "قريباً تكون جاهزة إن شاء الله ⚡\n\n"
-            "💡 في الوقت الحالي تكدر تحمل <b>الريلز والمنشورات</b> بإرسال الرابط مباشرة 📥",
+            "🔒 <b>حدث خطأ في تحميل الستوري</b>\n\n"
+            "اعد المحاولة لاحقا 🔄️",
             parse_mode="HTML"
         )
 
@@ -698,14 +703,70 @@ async def insta_handler(upd, ctx, url, cid):
 
 
 async def insta_stories_handler(upd, ctx, username, cid):
-    """ستوريات انستغرام — قريباً"""
-    await upd.message.reply_text(
-        "🛠 <b>نعمل على دعم تحميل ستوريات انستغرام!</b>\n\n"
-        "هذه الميزة تحتاج ربط حساب انستغرام وقيد التطوير الحين ⚙️\n"
-        "قريباً تكون جاهزة إن شاء الله ⚡\n\n"
-        "💡 في الوقت الحالي تكدر تحمل <b>الريلز والمنشورات</b> بإرسال الرابط مباشرة 📥",
-        parse_mode="HTML"
-    )
+    """ستوريات انستغرام بالـ cookies"""
+    msg = upd.message
+    username = username.lstrip('@').strip()
+    has_cookies = os.path.exists('cookies.txt')
+
+    if not has_cookies:
+        return await msg.reply_text(
+            "🔒 <b>حدث خطأ في تحميل الستوري</b>\n\n"
+            "اعد المحاولة لاحقا 🔄️",
+            parse_mode="HTML"
+        )
+
+    url = f"https://www.instagram.com/stories/{username}/"
+    wm = await msg.reply_text(f"📸 جاري تحميل ستوريات @{username}...")
+    tmp = tempfile.mkdtemp()
+    opts = {
+        'outtmpl': os.path.join(tmp,'%(id)s_%(autonumber)s.%(ext)s'),
+        'quiet': True, 'noplaylist': False, 'nocheckcertificate': True,
+        'ffmpeg_location': FFMPEG,
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'merge_output_format': 'mp4',
+        'cookiefile': 'cookies.txt',
+        'http_headers': {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15'},
+    }
+
+    def _dl():
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            videos = sorted(
+                [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith(('.mp4','.webm','.mkv'))],
+                key=os.path.getsize, reverse=True
+            )
+            images = [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith(('.jpg','.jpeg','.png','.webp'))]
+            return videos, images
+
+    try:
+        videos, images = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        total = len(videos) + len(images)
+        if not total:
+            return await wm.edit_text(
+                f"❌ ما لقيت ستوريات لـ @{username}\n"
+                "• ربما الحساب خاص 🔒\n"
+                "• او الستوريات قد تكون منتهية"
+            )
+        await wm.edit_text(f"📤 جاري رفع {total} ستوري...")
+        for v in videos[:5]:
+            with open(v,'rb') as f:
+                await ctx.bot.send_video(cid, f, caption=f"📸 @{username}", supports_streaming=True)
+        if images:
+            for i in range(0, min(len(images), 20), 10):
+                batch = images[i:i+10]
+                handles = []; media = []
+                for img in batch:
+                    fh = open(img,'rb'); handles.append(fh)
+                    media.append(InputMediaPhoto(fh))
+                try: await ctx.bot.send_media_group(cid, media)
+                finally:
+                    for fh in handles: fh.close()
+                if i+10 < len(images): await asyncio.sleep(1)
+        await wm.delete()
+    except Exception as e:
+        logger.error(f"[Stories] {e}")
+        await wm.edit_text(f"❌ فشل: {str(e)[:150]}")
+    finally: shutil.rmtree(tmp, ignore_errors=True)
 
 
 async def pinterest_handler(upd, ctx, url, cid):
@@ -782,7 +843,12 @@ async def music_handler(upd, ctx, url, cid, platform="🎵"):
         'quiet':True,'nocheckcertificate':True,'geo_bypass':True,
         'ffmpeg_location':FFMPEG,
         'format':'bestaudio/best',
-        'postprocessors':[{'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':'320'}],
+        'writethumbnail': True,  # تحميل صورة الغلاف
+        'postprocessors': [
+            {'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':'320'},
+            {'key':'FFmpegMetadata','add_metadata':True},   # اسم + مغني + ألبوم
+            {'key':'EmbedThumbnail'},                       # صورة الغلاف داخل MP3
+        ],
         'http_headers':{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36'},
     }
     if is_yt:
@@ -791,7 +857,7 @@ async def music_handler(upd, ctx, url, cid, platform="🎵"):
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             for f in os.listdir(tmp):
-                if f.endswith('.mp3'): return os.path.join(tmp,f), info.get('title',''), info.get('uploader','') or info.get('artist','')
+                if f.endswith('.mp3'): return os.path.join(tmp,f), info.get('title',''), info.get('uploader','') or info.get('artist','') or info.get('creator','')
         return None,'',''
     try:
         fp,title,artist = await asyncio.get_running_loop().run_in_executor(None, _dl)
@@ -813,6 +879,55 @@ async def music_handler(upd, ctx, url, cid, platform="🎵"):
         await wm.edit_text(f"❌ فشل التحميل: {str(e)[:100]}")
     finally: shutil.rmtree(tmp, ignore_errors=True)
 
+
+
+async def spotify_handler(upd, ctx, url, cid):
+    """سبوتيفاي — تحميل عبر spotdl بأعلى جودة مع صورة الغلاف"""
+    msg = upd.message
+    wm = await msg.reply_text("🎧 جاري البحث عن المقطع من سبوتيفاي...")
+    tmp = tempfile.mkdtemp()
+
+    def _dl():
+        # spotdl يحتاج يكون مثبت: pip install spotdl
+        cmd = [
+            'spotdl', url,
+            '--output', tmp,
+            '--format', 'mp3',
+            '--bitrate', '320k',
+            '--threads', '1',
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if result.returncode != 0:
+            logger.error(f"[spotdl] {result.stderr[:300]}")
+        files = [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith('.mp3')]
+        return files
+
+    try:
+        files = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        if not files:
+            return await wm.edit_text(
+                "❌ فشل التحميل من سبوتيفاي.\n"
+                "خطأ 402 ✖️\n",
+                parse_mode="HTML"
+            )
+        await wm.edit_text(f"📤 جاري رفع {len(files)} مقطع...")
+        for fp in files[:10]:
+            name = os.path.basename(fp).replace('.mp3','')
+            with open(fp,'rb') as f:
+                await ctx.bot.send_audio(cid, f, title=name[:64], caption=f"🎧 {name[:60]}")
+        await wm.delete()
+    except FileNotFoundError:
+        await wm.edit_text(
+            "❌ spotdl غير مثبت!\n"
+            "خطاء 404 ✖️\n",
+            parse_mode="HTML"
+        )
+    except subprocess.TimeoutExpired:
+        await wm.edit_text("❌ انتهى الوقت. الأغنية قد تكون طويلة.")
+    except Exception as e:
+        logger.error(f"[Spotify] {e}")
+        await wm.edit_text(f"❌ خطأ: {str(e)[:100]}")
+    finally: shutil.rmtree(tmp, ignore_errors=True)
 
 async def tiktok_user_info(upd, ctx, username, cid):
     """معلومات حساب تيك توك"""
@@ -974,7 +1089,7 @@ async def cmd_start(upd, ctx):
             "📥 <b>المواقع المدعومة:</b>\n"
             "🎬 يوتيوب  🐦 X/تويتر  🎵 تيك توك\n"
             "🇨🇳 دوين  📘 فيس بوك  📸 انستغرام\n"
-            "📌 بينترست  🎵 ساوند كلاود  🎵 يوتيوب ميوزك\n\n"
+            "📌 بينترست  🎵 ساوند كلاود  🎵 يوتيوب ميوزك\n""🎧 سبوتيفاي  🧵 ثريدز\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "🌐 <code>ترجمة [نص]</code> — ترجمة للعربي\n"
             "🔢 <code>حساب [عملية]</code> — حاسبة\n"
@@ -1318,6 +1433,8 @@ async def handle_msg(upd, ctx):
         # روابط بالخاص
         if re.search(r'music\.youtube\.com',text,re.I): await music_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid,"🎵"); return
         if re.search(r'soundcloud\.com',text,re.I): await music_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid,"🎶"); return
+        if re.search(r'spotify\.com',text,re.I): await spotify_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid); return
+        if re.search(r'threads\.net',text,re.I): await auto_download(upd,ctx,re.search(r'https?://\S+',text).group(),cid,"🧵"); return
         if re.search(r'(youtube\.com|youtu\.be|shorts)',text,re.I): await yt_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
         if re.search(r'(x\.com|twitter\.com)',text,re.I): await x_handler(upd,ctx,re.search(r'https?://\S+',text).group(),uid); return
         if re.search(r'(tiktok\.com|vm\.tiktok\.com|douyin\.com)',text,re.I): await tiktok_handler(upd,ctx,re.search(r'https?://\S+',text).group(),cid,msg.message_id); return
@@ -1391,8 +1508,8 @@ async def handle_msg(upd, ctx):
             else:
                 await msg.reply_text(
                     "💡 <b>شو أقدر أسويلك؟</b>\n\n"
-                    "📥 أرسل رابط للتحميل (يوتيوب، تيك توك، X، فيس بوك، انستغرام، بينترست)\n"
-                    "🎵 يوتيوب ميوزك / ساوند كلاود — أرسل الرابط مباشرة\n"
+                    "📥 أرسل رابط للتحميل (يوتيوب، تيك توك، ثريدز X، فيس بوك، انستغرام، بينترست)\n"
+                    "🎵 يوتيوب ميوزك / ساوند كلاود / سبوتيفاي — أرسل الرابط مباشرة\n"
                     "🤖 <code>الذكاء الاصطناعي — قريبا...\n"
                     "🌐 <code>ترجمة [نص]</code> — ترجمة للعربي\n"
                     "🔢 <code>حساب 5*5+2</code> — حاسبة\n"
@@ -1702,6 +1819,20 @@ async def handle_msg(upd, ctx):
 # ═══════════════════════════════════════════════════════════════════
 # 12. تشغيل البوت
 # ═══════════════════════════════════════════════════════════════════
+
+async def _keep_alive(app):
+    """يمنع Render من تنويم البوت — ping كل 10 دقائق"""
+    import aiohttp
+    url = os.environ.get('RENDER_EXTERNAL_URL', '')
+    if not url:
+        return  # مو على Render، ما نحتاجه
+    while True:
+        try:
+            async with aiohttp.ClientSession() as s:
+                await s.get(url, timeout=aiohttp.ClientTimeout(total=10))
+        except: pass
+        await asyncio.sleep(600)
+
 def main():
     token = os.environ.get("BOT_TOKEN","8159446452:AAHvUE5aEvuTmGfwAYAV7EqfshKD9Nv-B5o")
     app = Application.builder().token(token).build()
@@ -1733,6 +1864,9 @@ def main():
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,track_msg), group=1)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_msg), group=2)
     logger.info("🚀 Bot started!")
+    # شغّل keep_alive لـ Render
+    loop = asyncio.get_event_loop()
+    loop.create_task(_keep_alive(app))
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
