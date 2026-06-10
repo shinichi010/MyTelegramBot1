@@ -913,18 +913,20 @@ async def spotify_handler(upd, ctx, url, cid):
             None
         )
         
-        # 1. إضافة أمر 'download' لتوافق الإصدارات الحديثة
+        # تمرير الرابط مباشرة بدون كلمات فرعية لتوافق نسختك
         if spotdl_bin:
-            cmd = [spotdl_bin, 'download', url, '--path', tmp, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
+            cmd = [spotdl_bin, url, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
         else:
-            cmd = [sys.executable, '-m', 'spotdl', 'download', url, '--path', tmp, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
+            cmd = [sys.executable, '-m', 'spotdl', url, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
         
-        # 2. تمرير ملف الكوكيز الخاص بك لتفادي حظر سيرفر Railway من يوتيوب
+        # تمرير ملف الكوكيز بالمسار الكامل (المطلق) إذا كان موجوداً
         if os.path.exists('cookies.txt'):
-            cmd.extend(['--cookie-file', 'cookies.txt'])
+            cmd.extend(['--cookie-file', os.path.abspath('cookies.txt')])
             
         logger.info(f"[spotdl] cmd: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        
+        # تشغيل الأداة داخل المجلد المؤقت مباشرة عبر (cwd=tmp) لضمان نزول الملف هناك
+        result = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True, timeout=300)
         
         files = [os.path.join(tmp, f) for f in os.listdir(tmp) if f.endswith('.mp3')]
         return files, result.returncode, result.stderr
@@ -933,13 +935,12 @@ async def spotify_handler(upd, ctx, url, cid):
         files, returncode, stderr = await asyncio.get_running_loop().run_in_executor(None, _dl)
         
         if not files:
-            # طباعة تفاصيل الخطأ مباشرة للمستخدم لمعرفة السبب بدقة
             error_details = stderr[:300] if stderr else "لم يتم استخراج أي ملفات (تأكد من صحة الرابط)."
             return await wm.edit_text(
                 f"❌ فشل التحميل من سبوتيفاي.\n\n"
                 f"<b>تقرير خطأ الأداة (للصيانة):</b>\n"
                 f"<code>{error_details}</code>\n\n"
-                f"💡 إذا كان الخطأ متعلقاً بـ Sign in أو حظر من يوتيوب، تأكد من تحديث الكوكيز في COOKIES_DATA.",
+                f"💡 إذا كان الخطأ متعلقاً بالـ Sign in، تأكد من تحديث الكوكيز.",
                 parse_mode="HTML"
             )
             
