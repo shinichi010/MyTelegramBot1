@@ -898,8 +898,6 @@ async def music_handler(upd, ctx, url, cid, platform="🎵"):
         await wm.edit_text(f"❌ فشل التحميل: {str(e)[:100]}")
     finally: shutil.rmtree(tmp, ignore_errors=True)
 
-
-
 async def spotify_handler(upd, ctx, url, cid):
     """سبوتيفاي — تحميل عبر spotdl بأعلى جودة مع صورة الغلاف"""
     msg = upd.message
@@ -914,28 +912,37 @@ async def spotify_handler(upd, ctx, url, cid):
             _shutil.which(os.path.join(os.path.dirname(sys.executable), 'spotdl')) or
             None
         )
-        # تم تغيير --output إلى --path لتحديد مجلد الحفظ الصحيح
+        
+        # 1. إضافة أمر 'download' لتوافق الإصدارات الحديثة
         if spotdl_bin:
-            cmd = [spotdl_bin, url, '--path', tmp, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
+            cmd = [spotdl_bin, 'download', url, '--path', tmp, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
         else:
-            # fallback: شغّله كـ Python module
-            cmd = [sys.executable, '-m', 'spotdl', url, '--path', tmp, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
+            cmd = [sys.executable, '-m', 'spotdl', 'download', url, '--path', tmp, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
+        
+        # 2. تمرير ملف الكوكيز الخاص بك لتفادي حظر سيرفر Railway من يوتيوب
+        if os.path.exists('cookies.txt'):
+            cmd.extend(['--cookie-file', 'cookies.txt'])
             
-        logger.info(f"[spotdl] cmd: {cmd[0]}")
+        logger.info(f"[spotdl] cmd: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            logger.error(f"[spotdl] stderr: {result.stderr[:500]}")
+        
         files = [os.path.join(tmp, f) for f in os.listdir(tmp) if f.endswith('.mp3')]
-        return files
+        return files, result.returncode, result.stderr
 
     try:
-        files = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        files, returncode, stderr = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        
         if not files:
+            # طباعة تفاصيل الخطأ مباشرة للمستخدم لمعرفة السبب بدقة
+            error_details = stderr[:300] if stderr else "لم يتم استخراج أي ملفات (تأكد من صحة الرابط)."
             return await wm.edit_text(
-                "❌ فشل التحميل من سبوتيفاي.\n"
-                "تأكد من إعدادات الرابط أو السيرفر.",
+                f"❌ فشل التحميل من سبوتيفاي.\n\n"
+                f"<b>تقرير خطأ الأداة (للصيانة):</b>\n"
+                f"<code>{error_details}</code>\n\n"
+                f"💡 إذا كان الخطأ متعلقاً بـ Sign in أو حظر من يوتيوب، تأكد من تحديث الكوكيز في COOKIES_DATA.",
                 parse_mode="HTML"
             )
+            
         await wm.edit_text(f"📤 جاري رفع {len(files)} مقطع...")
         for fp in files[:10]:
             name = os.path.basename(fp).replace('.mp3','')
