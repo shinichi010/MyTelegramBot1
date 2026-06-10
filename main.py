@@ -899,7 +899,7 @@ async def music_handler(upd, ctx, url, cid, platform="🎵"):
     finally: shutil.rmtree(tmp, ignore_errors=True)
 
 async def spotify_handler(upd, ctx, url, cid):
-    """سبوتيفاي — تحميل عبر spotdl بأعلى جودة متوفرة مع إصلاح مسار ffmpeg وتوسيع تقرير الخطأ"""
+    """سبوتيفاي — تحميل عبر spotdl مع ربط ميكانيكي صريح لـ ffmpeg لمنع الـ FFmpegError"""
     import html  # مكتبة أساسية لتنظيف النصوص ومنع أخطاء تليجرام
     msg = upd.message
     wm = await msg.reply_text("🎧 جاري البحث عن المقطع وتحميله من سبوتيفاي...")
@@ -907,6 +907,29 @@ async def spotify_handler(upd, ctx, url, cid):
 
     def _dl():
         import sys, shutil as _shutil
+        import imageio_ffmpeg  # استدعاء المكتبة للوصول للملف التنفيذي الأصلي
+        
+        # 1. حل مشكلة تسمية FFMPEG لـ spotdl جذرياً
+        try:
+            ffmpeg_real_path = imageio_ffmpeg.get_ffmpeg_exe()
+            local_ffmpeg_path = os.path.join(tmp, 'ffmpeg')
+            
+            # إنشاء اختصار صريح باسم 'ffmpeg' داخل المجلد المؤقت ليطابق طلب الأداة
+            if not os.path.exists(local_ffmpeg_path):
+                try:
+                    os.symlink(ffmpeg_real_path, local_ffmpeg_path)
+                except Exception:
+                    # حل بديل في حال لم يدعم السيرفر الـ Symlink نقوم بنسخه فوراً
+                    _shutil.copy(ffmpeg_real_path, local_ffmpeg_path)
+                # إعطاء صلاحيات التشغيل للملف
+                os.chmod(local_ffmpeg_path, 0o755)
+        except Exception as fe:
+            logger.error(f"[Spotify FFMPEG Setup Error] {fe}")
+
+        # 2. حقن المجلد المؤقت في بداية الـ PATH لكي ترى الأداة ملف الـ ffmpeg الجديد فوراً
+        env = os.environ.copy()
+        env["PATH"] = tmp + os.pathsep + env.get("PATH", "")
+
         # العثور على أداة spotdl بالسيرفر
         spotdl_bin = (
             _shutil.which('spotdl') or
@@ -914,14 +937,6 @@ async def spotify_handler(upd, ctx, url, cid):
             None
         )
         
-        # تجهيز بيئة النظام وإدخال ffmpeg إلى الـ PATH لكي تراها أداة spotdl وتعمل بنجاح
-        env = os.environ.copy()
-        if 'FFMPEG' in globals() and FFMPEG:
-            ffmpeg_dir = os.path.dirname(FFMPEG)
-            if ffmpeg_dir not in env.get("PATH", ""):
-                env["PATH"] = ffmpeg_dir + os.pathsep + env.get("PATH", "")
-
-        # استخدام أمر مبسط ومباشر لضمان التوافق الكامل مع نسختك
         if spotdl_bin:
             cmd = [spotdl_bin, url]
         else:
@@ -929,10 +944,10 @@ async def spotify_handler(upd, ctx, url, cid):
             
         logger.info(f"[spotdl] cmd: {' '.join(cmd)}")
         
-        # تشغيل الأداة بداخل المجلد المؤقت مع تمرير البيئة المحقونة بـ ffmpeg
+        # تشغيل الأداة بداخل المجلد المؤقت مع تمرير البيئة المحقونة
         result = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True, timeout=300, env=env)
         
-        # البحث عن أي ملف صوّتي ناتج بمختلف الامتدادات لضمان الرفع في كل الأحوال
+        # البحث عن الملفات الصوتية الناتجة بمختلف الامتدادات
         files = [os.path.join(tmp, f) for f in os.listdir(tmp) if f.endswith(('.mp3', '.m4a', '.opus', '.wav', '.ogg'))]
         return files, result.returncode, result.stdout, result.stderr
 
@@ -940,7 +955,6 @@ async def spotify_handler(upd, ctx, url, cid):
         files, returncode, stdout, stderr = await asyncio.get_running_loop().run_in_executor(None, _dl)
         
         if not files:
-            # تم زيادة الحد إلى 1500 حرف لإظهار نهاية الـ Traceback والخطأ الحقيقي بالكامل
             error_log = ""
             if stderr and stderr.strip():
                 safe_stderr = html.escape(stderr.strip()[:1500])
@@ -962,7 +976,6 @@ async def spotify_handler(upd, ctx, url, cid):
         await wm.edit_text(f"📤 جاري رفع {len(files)} مقطع...")
         for fp in files[:10]:
             name = os.path.basename(fp)
-            # تنظيف الامتداد من الاسم عند العرض للمستخدم
             for ext in ['.mp3', '.m4a', '.opus', '.wav', '.ogg']:
                 if name.endswith(ext):
                     name = name.replace(ext, '')
