@@ -1,2 +1,4 @@
 [phases.setup]
 nixPkgs = ["ffmpeg"]
+[phases.build]
+cmds = ["pip install -r requirements.txt", "python3 -m spotdl --download-ffmpeg"]
