@@ -100,14 +100,27 @@ def _load_cookies():
     import base64
     data = os.environ.get('COOKIES_DATA', '').strip()
     if not data:
+        logger.info("ℹ️ COOKIES_DATA not set — no cookies loaded")
         return
     try:
-        content = base64.b64decode(data).decode('utf-8')
+        # نظّف كل الفراغات والـ line breaks (ممكن تصير من Railway)
+        clean = ''.join(data.split())
+        content = base64.b64decode(clean).decode('utf-8')
         with open('cookies.txt', 'w', encoding='utf-8') as f:
             f.write(content)
-        logger.info("✅ cookies.txt loaded from COOKIES_DATA")
+        lines = [l for l in content.splitlines() if l and not l.startswith('#') and '\t' in l]
+        domains = set(l.split('\t')[0].lstrip('.') for l in lines)
+        logger.info(f"✅ cookies.txt loaded — {len(lines)} cookies — domains: {domains}")
     except Exception as e:
-        logger.error(f"❌ Failed to load cookies: {e}")
+        logger.error(f"❌ base64 decode failed: {e}")
+        # Fallback: ربما الـ COOKIES_DATA نفسها هي محتوى الملف مباشرة
+        try:
+            if '\t' in data and ('instagram' in data or 'x.com' in data or 'twitter' in data):
+                with open('cookies.txt', 'w', encoding='utf-8') as f:
+                    f.write(data)
+                logger.info("✅ cookies.txt loaded as plain-text fallback")
+        except Exception as e2:
+            logger.error(f"❌ plain-text fallback failed: {e2}")
 _load_cookies()
 
 def db_get(path: str, default=None):
@@ -364,28 +377,39 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
 
 # تيك توك + دوين عبر API
 def tiktok_api(url: str):
-    # normalize douyin URL
+    """تيك توك + دوين عبر tikwm API"""
+    encoded = requests.utils.quote(url, safe='')
     api_urls = [
-        f'https://www.tikwm.com/api/?url={requests.utils.quote(url)}&hd=1',
-        f'https://tikwm.com/api/?url={requests.utils.quote(url)}',
+        f'https://www.tikwm.com/api/?url={encoded}&hd=1',
         f'https://www.tikwm.com/api/?url={url}&hd=1',
+        f'https://tikwm.com/api/?url={encoded}&hd=1',
+        # API بديلة
+        f'https://api.tikmate.app/api/lookup?url={encoded}',
     ]
-    for api_url in api_urls:
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Referer': 'https://www.tikwm.com/',
+        'Origin': 'https://www.tikwm.com',
+    }
+    for api_url in api_urls[:3]:  # tikwm فقط
         try:
-            r = requests.get(api_url, timeout=25,
-                headers={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0',
-                         'Accept':'application/json','Referer':'https://www.tikwm.com/'}).json()
-            if r.get('code') == 0 and 'data' in r:
-                d = r['data']
-                author_obj = d.get('author',{})
-                author = author_obj.get('unique_id','') if isinstance(author_obj,dict) else str(author_obj)
-                author = author or 'مجهول'
+            r = requests.get(api_url, timeout=30, headers=headers)
+            if r.status_code != 200: continue
+            j = r.json()
+            if j.get('code') == 0 and 'data' in j:
+                d = j['data']
+                author_obj = d.get('author', {})
+                author = (author_obj.get('unique_id','') if isinstance(author_obj,dict) else str(author_obj)) or 'مجهول'
                 music = d.get('music','')
                 if isinstance(music, dict): music = music.get('play','')
-                if d.get('images'): return {'type':'images','data':d['images'],'author':author,'music':music}
+                if d.get('images'):
+                    return {'type':'images','data':d['images'],'author':author,'music':music}
                 vid = d.get('hdplay') or d.get('play') or d.get('wmplay')
-                if vid: return {'type':'video','data':vid,'author':author,'music':music}
-        except Exception as e: logger.error(f"[tikwm] {e}")
+                if vid:
+                    return {'type':'video','data':vid,'author':author,'music':music}
+        except Exception as e:
+            logger.warning(f"[tikwm] {api_url[:50]}: {e}")
     return None
 
 # ═══════════════════════════════════════════════════════════════════
@@ -609,27 +633,46 @@ async def tiktok_handler(upd, ctx, url, cid, reply_id):
 
     def _dl_tiktok():
         tmp2 = tempfile.mkdtemp()
-        opts = {
+        # قائمة إعدادات للمحاولة واحدة وراء الثانية
+        attempts = []
+        if is_douyin:
+            attempts = [
+                # محاولة 1: douyin عبر yt-dlp بدون extractor args
+                {'format':'best[ext=mp4]/best',
+                 'http_headers':{'User-Agent':'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36'}},
+                # محاولة 2: مع extractor args
+                {'format':'best',
+                 'extractor_args':{'douyin':{'app_name':['trill']}},
+                 'http_headers':{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}},
+            ]
+        else:
+            attempts = [
+                # محاولة 1: TikTok بـ user agent عادي
+                {'format':'best[ext=mp4]/best',
+                 'http_headers':{'User-Agent':'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15'}},
+                # محاولة 2: بـ user agent مختلف
+                {'format':'best',
+                 'http_headers':{'User-Agent':'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36'}},
+            ]
+        base_opts = {
             'outtmpl': os.path.join(tmp2,'%(id)s.%(ext)s'),
             'quiet':True,'nocheckcertificate':True,'geo_bypass':True,
-            'ffmpeg_location':FFMPEG,
-            'format':'best[ext=mp4]/best',
-            'merge_output_format':'mp4',
-            'http_headers':{
-                'User-Agent': (
-                    'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 Chrome/91.0.4472.120 Mobile Safari/537.36'
-                    if is_douyin else
-                    'TikTok 26.2.0 rv:262018 (iPhone; iOS 14.4.2; en_US) Cronet'
-                ),
-            },
+            'ffmpeg_location':FFMPEG,'merge_output_format':'mp4',
         }
-        if is_douyin:
-            opts['extractor_args'] = {'douyin': {'app_name': ['trill']}}
-        with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            for f in os.listdir(tmp2):
-                if f.endswith(('.mp4','.webm','.mkv')):
-                    return os.path.join(tmp2,f), tmp2
+        for attempt in attempts:
+            try:
+                opts = {**base_opts, **attempt}
+                with YoutubeDL(opts) as ydl:
+                    ydl.extract_info(url, download=True)
+                    for f in os.listdir(tmp2):
+                        if f.endswith(('.mp4','.webm','.mkv','.m4v')):
+                            return os.path.join(tmp2,f), tmp2
+            except Exception as e:
+                logger.warning(f"[TikTok attempt] {e}")
+                # نظّف الملفات الجزئية قبل المحاولة التالية
+                for f in os.listdir(tmp2):
+                    try: os.remove(os.path.join(tmp2,f))
+                    except: pass
         return None, tmp2
 
     fp, tmp = await asyncio.get_running_loop().run_in_executor(None, _dl_tiktok)
@@ -671,39 +714,68 @@ async def insta_handler(upd, ctx, url, cid):
     if has_cookies: opts['cookiefile'] = 'cookies.txt'
 
     def _dl():
-        with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            videos = sorted(
-                [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith(('.mp4','.webm','.mkv'))],
-                key=os.path.getsize, reverse=True
-            )
-            images = [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith(('.jpg','.jpeg','.png','.webp'))]
-            return videos, images, info.get('title','انستغرام')
+        title = 'انستغرام'
+        # المحاولة الأولى: تحميل عادي (ريلز/فيديو)
+        try:
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                title = info.get('title', 'انستغرام')
+        except Exception as e:
+            logger.warning(f"[Insta first pass] {e}")
+            # إذا فشل بسبب الصيغة، جرب بدون تحديد format
+            try:
+                opts2 = dict(opts)
+                opts2['format'] = 'best'
+                opts2.pop('merge_output_format', None)
+                with YoutubeDL(opts2) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    title = info.get('title', 'انستغرام')
+            except Exception as e2:
+                logger.warning(f"[Insta second pass] {e2}")
 
-    try:
-        videos, images, title = await asyncio.get_running_loop().run_in_executor(None, _dl)
-        if not videos and not images:
-            return await wm.edit_text("❌ ما لقيت محتوى.\nتأكد أن الحساب عام.")
+        videos = sorted(
+            [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith(('.mp4','.webm','.mkv'))],
+            key=os.path.getsize, reverse=True
+        )
+        images = [os.path.join(tmp,f) for f in os.listdir(tmp)
+                  if f.endswith(('.jpg','.jpeg','.png','.webp'))]
+        return videos, images, title
+
+    async def _send_results(videos, images, title):
         await wm.edit_text("📤 جاري الرفع...")
         for v in videos[:3]:
             with open(v,'rb') as f:
                 await ctx.bot.send_video(cid, f, caption=f"📸 {title[:60]}", supports_streaming=True)
         if images:
-            for i in range(0, len(images[:20]), 10):
+            for i in range(0, min(len(images), 20), 10):
                 batch = images[i:i+10]
-                handles = []; media = []
+                handles = []; media_grp = []
                 for img in batch:
                     fh = open(img,'rb'); handles.append(fh)
-                    media.append(InputMediaPhoto(fh))
-                try: await ctx.bot.send_media_group(cid, media)
+                    media_grp.append(InputMediaPhoto(fh))
+                try: await ctx.bot.send_media_group(cid, media_grp)
                 finally:
                     for fh in handles: fh.close()
                 if i+10 < len(images): await asyncio.sleep(1)
         await wm.delete()
+
+    try:
+        videos, images, title = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        if not videos and not images:
+            no_cook = not has_cookies
+            return await wm.edit_text(
+                "❌ ما لقيت محتوى قابل للتحميل.\n"
+                + ("• أضف كوكيز انستغرام لتحميل المحتوى الخاص\n" if no_cook else "")
+                + "• تأكد أن الحساب عام والرابط صحيح"
+            )
+        await _send_results(videos, images, title)
     except Exception as e:
-        logger.error(f"[Insta] {e}")
-        hint = "\n💡 اذا تكررت المشكلة ارسلها للحساب @shn_1 " if not has_cookies else ""
-        await wm.edit_text(f"❌ فشل التحميل من انستغرام.{hint}")
+        err = str(e)
+        logger.error(f"[Insta] {err}")
+        if 'login' in err.lower() or 'checkpoint' in err.lower():
+            await wm.edit_text("🔒 انستغرام يطلب تسجيل دخول. جدّد الكوكيز.")
+        else:
+            await wm.edit_text(f"❌ فشل: {err[:120]}")
     finally: shutil.rmtree(tmp, ignore_errors=True)
 
 
