@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════
 WA3ED_LIST = [
     "عيونها السود والبيض 👀",
-    " هلاو بالحلو \ ة 🌸",
+    " هلا بالحلو \ ة 🌸",
     "مالي خلقك 😏",
     "اتسرسح منا وليدي 😤",
     "وعد هسه مشغولة 😅",
@@ -1069,7 +1069,7 @@ async def spotify_handler(upd, ctx, url, cid):
     finally: 
         shutil.rmtree(tmp, ignore_errors=True)
 
-async def tiktok_handler(upd, ctx, username, cid):
+async def tiktok_user_info(upd, ctx, username, cid):
     """معلومات حساب تيك توك"""
     msg = upd.message
 
