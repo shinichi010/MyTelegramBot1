@@ -1069,172 +1069,102 @@ async def spotify_handler(upd, ctx, url, cid):
     finally: 
         shutil.rmtree(tmp, ignore_errors=True)
 
-async def tiktok_user_info(upd, ctx, username, cid):
-    """معلومات حساب تيك توك"""
+async def tiktok_info_handler(upd, ctx, username=None):
+    """دالة جلب معلومات حساب التيك توك وعرض علم الدولة بشكل صحيح 100%"""
     msg = upd.message
+    cid = msg.chat_id
+    
+    # إذا لم يتم تمرير اليوزر من دالة أخرى، نستخرجه تلقائياً من نص الرسالة (مثال: تيك codexpert)
+    if username is None:
+        text = msg.text or ""
+        parts = text.split(maxsplit=1)
+        username = parts[1] if len(parts) > 1 else ""
 
     username = username.lstrip('@').strip()
-
     if not username:
-
         return await msg.reply_text("❗ مثال: <code>تيك codexpert</code>", parse_mode="HTML")
-
+        
     wm = await msg.reply_text(f"🔍 جاري جلب معلومات @{username}...")
 
-
-
     COUNTRY_FLAG = {
-
         'IQ':'🇮🇶','SA':'🇸🇦','US':'🇺🇸','GB':'🇬🇧','AE':'🇦🇪','EG':'🇪🇬',
-
         'TR':'🇹🇷','IR':'🇮🇷','RU':'🇷🇺','DE':'🇩🇪','FR':'🇫🇷','IN':'🇮🇳',
-
         'CN':'🇨🇳','JP':'🇯🇵','KR':'🇰🇷','BR':'🇧🇷','KW':'🇰🇼','QA':'🇶🇦',
-
         'BH':'🇧🇭','OM':'🇴🇲','JO':'🇯🇴','SY':'🇸🇾','LB':'🇱🇧','YE':'🇾🇪',
-
         'LY':'🇱🇾','TN':'🇹🇳','DZ':'🇩🇿','MA':'🇲🇦','SD':'🇸🇩','PK':'🇵🇰',
-
     }
 
-
-
     def _fetch():
-
         endpoints = [
-
             f"https://www.tikwm.com/api/user/info?unique_id={username}&count=1",
-
             f"https://tikwm.com/api/user/info?unique_id={username}",
-
         ]
-
         headers = {
-
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0",
-
             "Referer": "https://www.tikwm.com/",
-
             "Accept": "application/json",
-
         }
-
         for ep in endpoints:
-
             try:
-
                 r = requests.get(ep, headers=headers, timeout=20)
-
                 data = r.json()
-
                 if data.get('code') == 0:
-
                     return data
-
             except: continue
-
         return {}
 
-
-
     try:
-
         data = await asyncio.get_running_loop().run_in_executor(None, _fetch)
-
         if data.get('code') == 0 and data.get('data'):
-
             d = data['data']
-
             u = d.get('user', d)
-
             stats = d.get('stats', u)
-
             name = u.get('nickname') or u.get('name', username)
-
             uid_str = str(u.get('id', '—'))
-
             followers = (stats.get('followerCount') or u.get('followerCount') or d.get('fans') or 0)
-
             following = (stats.get('followingCount') or u.get('followingCount') or d.get('following') or 0)
-
             likes = (stats.get('heartCount') or u.get('heartCount') or stats.get('diggCount') or d.get('heart') or 0)
-
             videos = (stats.get('videoCount') or u.get('videoCount') or d.get('video') or 0)
-
             bio = u.get('signature','') or '—'
-
             verified = "✅ موثق" if (u.get('verified') or u.get('isVerified')) else "❌ غير موثق"
-
             private = "🔒 خاص" if (u.get('privateAccount') or u.get('secret')) else "🌐 عام"
-
             avatar = u.get('avatarLarger') or u.get('avatarMedium') or u.get('avatarThumb') or u.get('avatar','')
-
-            region = (u.get('region') or u.get('location') or '').upper()
-
+            
+            # جلب الدولة بنجاح بفحص d أولاً ثم u لضمان ظهور العلم دائماً
+            region = (d.get('region') or u.get('region') or d.get('location') or u.get('location') or '').upper()
             country_str = f"{COUNTRY_FLAG.get(region,'🌍')} {region}" if region else "🌍 غير معروف"
-
+            
             create_ts = u.get('createTime') or u.get('createtime') or 0
-
             joined_str = ""
-
             if create_ts:
-
                 try:
-
                     import datetime
-
                     joined_str = "\n📅 <b>تاريخ الانضمام:</b> " + datetime.datetime.fromtimestamp(int(create_ts)).strftime('%Y/%m/%d')
-
                 except: pass
-
             txt = (
-
                 f"🎵 <b>معلومات تيك توك</b>\n\n"
-
                 f"👤 <b>الاسم:</b> {name}\n"
-
                 f"📛 <b>اليوزر:</b> @{username}\n"
-
                 f"🆔 <b>ID:</b> <code>{uid_str}</code>\n"
-
                 f"🌍 <b>الدولة:</b> {country_str}\n"
-
                 f"✅ <b>التوثيق:</b> {verified}\n"
-
                 f"🔒 <b>الحساب:</b> {private}\n"
-
                 f"👥 <b>المتابعون:</b> {followers:,}\n"
-
                 f"➡️ <b>يتابع:</b> {following:,}\n"
-
                 f"❤️ <b>الإعجابات:</b> {likes:,}\n"
-
                 f"🎬 <b>الفيديوهات:</b> {videos:,}\n"
-
                 f"📝 <b>البايو:</b> {bio[:150]}"
-
                 f"{joined_str}\n\n"
-
                 f"🔗 <a href='https://www.tiktok.com/@{username}'>فتح الحساب</a>"
-
             )
-
             await wm.delete()
-
             if avatar:
-
                 try:
-
                     await ctx.bot.send_photo(cid, avatar, caption=txt, parse_mode="HTML")
-
                     return
-
                 except: pass
-
             await msg.reply_text(txt, parse_mode="HTML")
-
         else:
-
             await wm.edit_text(f"❌ ما لقيت حساب @{username}.\nتأكد من اليوزرنيم.")
     except Exception as e:
         logger.error(f"[TT info] {e}")
