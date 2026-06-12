@@ -686,101 +686,122 @@ async def tiktok_handler(upd, ctx, url, cid, reply_id):
         )
     if tmp: shutil.rmtree(tmp, ignore_errors=True)
 
-async def insta_handler(upd, ctx, url, cid):
-    """انستغرام — ريلز + صور + ستوريات (مع كوكيز)"""
-    msg = upd.message
+async def _insta_download_and_send(ctx, cid, url, wm, username="", download_all=False):
+    """دالة مشتركة لتحميل الانستغرام وإرسال الملفات"""
     has_cookies = os.path.exists('cookies.txt')
-    is_story = '/stories/' in url
-
-    # ستوريات بدون كوكيز
-    if is_story and not has_cookies:
-        return await msg.reply_text(
-            "🔒 <b>تحميل الستوريات يحتاج كوكيز انستغرام</b>\n\n"
-            "الكوكيز غير موجودة على السيرفر حالياً.\n"
-            "تأكد من إضافة <code>COOKIES_DATA</code> بـ Railway وإعادة النشر.",
-            parse_mode="HTML"
-        )
-
-    wm = await msg.reply_text("📸 جاري التحميل من انستغرام...")
     tmp = tempfile.mkdtemp()
-    opts = {
+    base_opts = {
         'outtmpl': os.path.join(tmp,'%(id)s_%(autonumber)s.%(ext)s'),
-        'quiet':True,'noplaylist':False,'nocheckcertificate':True,
-        'ffmpeg_location':FFMPEG,
-        'format':'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'merge_output_format':'mp4',
-        'http_headers':{'User-Agent':'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15'},
+        'quiet': True, 'nocheckcertificate': True, 'geo_bypass': True,
+        'ffmpeg_location': FFMPEG,
+        'http_headers': {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15'},
     }
-    if has_cookies: opts['cookiefile'] = 'cookies.txt'
+    if has_cookies: base_opts['cookiefile'] = 'cookies.txt'
 
     def _dl():
-        title = 'انستغرام'
-        # المحاولة الأولى: تحميل عادي (ريلز/فيديو)
-        try:
-            with YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                title = info.get('title', 'انستغرام')
-        except Exception as e:
-            logger.warning(f"[Insta first pass] {e}")
-            # إذا فشل بسبب الصيغة، جرب بدون تحديد format
+        title = username or 'انستغرام'
+        # محاولة 1: فيديو بجودة عالية
+        for fmt, extra in [
+            ('bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', {'merge_output_format':'mp4', 'noplaylist': not download_all}),
+            ('best', {'noplaylist': not download_all}),
+        ]:
             try:
-                opts2 = dict(opts)
-                opts2['format'] = 'best'
-                opts2.pop('merge_output_format', None)
-                with YoutubeDL(opts2) as ydl:
+                opts = {**base_opts, 'format': fmt, **extra}
+                with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=True)
-                    title = info.get('title', 'انستغرام')
-            except Exception as e2:
-                logger.warning(f"[Insta second pass] {e2}")
+                    title = info.get('title', title)
+                break
+            except Exception as e:
+                logger.warning(f"[Insta dl] fmt={fmt}: {e}")
 
         videos = sorted(
             [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith(('.mp4','.webm','.mkv'))],
             key=os.path.getsize, reverse=True
         )
         images = [os.path.join(tmp,f) for f in os.listdir(tmp)
-                  if f.endswith(('.jpg','.jpeg','.png','.webp'))]
+                  if f.endswith(('.jpg','.jpeg','.png','.webp'))
+                  and os.path.getsize(os.path.join(tmp,f)) > 5000]
         return videos, images, title
 
-    async def _send_results(videos, images, title):
+    try:
+        videos, images, title = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        if not videos and not images:
+            await wm.edit_text(
+                "❌ ما لقيت محتوى.\n"
+                + ("• أضف كوكيز انستغرام للمحتوى الخاص\n" if not has_cookies else "")
+                + "• تأكد أن الحساب عام"
+            )
+            return
+
         await wm.edit_text("📤 جاري الرفع...")
-        for v in videos[:3]:
+        for v in videos[:5]:
             with open(v,'rb') as f:
                 await ctx.bot.send_video(cid, f, caption=f"📸 {title[:60]}", supports_streaming=True)
         if images:
             for i in range(0, min(len(images), 20), 10):
                 batch = images[i:i+10]
-                handles = []; media_grp = []
+                handles=[]; media_grp=[]
                 for img in batch:
-                    fh = open(img,'rb'); handles.append(fh)
+                    fh=open(img,'rb'); handles.append(fh)
                     media_grp.append(InputMediaPhoto(fh))
                 try: await ctx.bot.send_media_group(cid, media_grp)
                 finally:
                     for fh in handles: fh.close()
                 if i+10 < len(images): await asyncio.sleep(1)
         await wm.delete()
-
-    try:
-        videos, images, title = await asyncio.get_running_loop().run_in_executor(None, _dl)
-        if not videos and not images:
-            no_cook = not has_cookies
-            return await wm.edit_text(
-                "❌ ما لقيت محتوى قابل للتحميل.\n"
-                + ("• أضف كوكيز انستغرام لتحميل المحتوى الخاص\n" if no_cook else "")
-                + "• تأكد أن الحساب عام والرابط صحيح"
-            )
-        await _send_results(videos, images, title)
     except Exception as e:
         err = str(e)
         logger.error(f"[Insta] {err}")
         if 'login' in err.lower() or 'checkpoint' in err.lower():
             await wm.edit_text("🔒 انستغرام يطلب تسجيل دخول. جدّد الكوكيز.")
+        elif 'private' in err.lower():
+            await wm.edit_text("❌ الحساب خاص.")
         else:
             await wm.edit_text(f"❌ فشل: {err[:120]}")
-    finally: shutil.rmtree(tmp, ignore_errors=True)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+async def insta_handler(upd, ctx, url, cid):
+    """انستغرام — ريلز + صور + ستوريات"""
+    msg = upd.message
+    has_cookies = os.path.exists('cookies.txt')
+    is_story = '/stories/' in url
+
+    if is_story:
+        if not has_cookies:
+            return await msg.reply_text(
+                "🔒 <b>تحميل الستوريات يحتاج كوكيز انستغرام</b>\n\n"
+                "الكوكيز غير موجودة على السيرفر.\n"
+                "أضف <code>COOKIES_DATA</code> بـ Railway.",
+                parse_mode="HTML"
+            )
+        # استخرج اليوزرنيم من الرابط
+        m = re.search(r'/stories/([^/?]+)', url)
+        username = m.group(1) if m else 'مجهول'
+        # رابط كل الستوريات
+        all_url = f"https://www.instagram.com/stories/{username}/"
+
+        # خزّن بيانات الستوري
+        shash = str(random.randint(10000,99999))
+        ctx.bot_data[f'ist_{shash}'] = {'url': url, 'all_url': all_url, 'uname': username}
+
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("📥 هذا الستوري", callback_data=f"ist_one_{shash}"),
+            InlineKeyboardButton("📥 جميع الستوريات", callback_data=f"ist_all_{shash}")
+        ]])
+        return await msg.reply_text(
+            f"📸 <b>ستوريات @{username}</b>\nاختر:",
+            parse_mode="HTML", reply_markup=markup
+        )
+
+    # منشورات عادية (ريلز / صور)
+    wm = await msg.reply_text("📸 جاري التحميل من انستغرام...")
+    await _insta_download_and_send(ctx, cid, url, wm)
 
 
 async def insta_stories_handler(upd, ctx, username, cid):
-    """ستوريات انستغرام بالـ cookies"""
+    """ستوري @username — يعرض زرين"""
     msg = upd.message
     username = username.lstrip('@').strip()
     has_cookies = os.path.exists('cookies.txt')
@@ -788,76 +809,22 @@ async def insta_stories_handler(upd, ctx, username, cid):
     if not has_cookies:
         return await msg.reply_text(
             "🔒 <b>تحميل الستوريات يحتاج كوكيز انستغرام</b>\n\n"
-            "أضف <code>COOKIES_DATA</code> من انستغرام بنفس طريقة X.\n"
-            "بعدها يشتغل تلقائياً! ✅",
+            "أضف <code>COOKIES_DATA</code> من انستغرام.",
             parse_mode="HTML"
         )
 
-    url = f"https://www.instagram.com/stories/{username}/"
-    wm = await msg.reply_text(f"📸 جاري تحميل ستوريات @{username}...")
-    tmp = tempfile.mkdtemp()
-    opts = {
-        'outtmpl': os.path.join(tmp,'%(id)s_%(autonumber)s.%(ext)s'),
-        'quiet': True, 'noplaylist': False, 'nocheckcertificate': True,
-        'ffmpeg_location': FFMPEG,
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'merge_output_format': 'mp4',
-        'cookiefile': 'cookies.txt',
-        'http_headers': {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15'},
-    }
+    all_url = f"https://www.instagram.com/stories/{username}/"
+    shash = str(random.randint(10000,99999))
+    ctx.bot_data[f'ist_{shash}'] = {'url': all_url, 'all_url': all_url, 'uname': username}
 
-    def _dl():
-        with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            videos = sorted(
-                [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith(('.mp4','.webm','.mkv'))],
-                key=os.path.getsize, reverse=True
-            )
-            images = [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith(('.jpg','.jpeg','.png','.webp'))]
-            return videos, images
-
-    try:
-        videos, images = await asyncio.get_running_loop().run_in_executor(None, _dl)
-        total = len(videos) + len(images)
-        if not total:
-            return await wm.edit_text(
-                f"❌ ما لقيت ستوريات لـ @{username}\n"
-                "• الحساب خاص؟ تأكد أن الكوكيز من حساب يتابعه\n"
-                "• الستوريات قد تكون منتهية"
-            )
-        await wm.edit_text(f"📤 جاري رفع {total} ستوري...")
-        for v in videos[:5]:
-            with open(v,'rb') as f:
-                await ctx.bot.send_video(cid, f, caption=f"📸 @{username}", supports_streaming=True)
-        if images:
-            for i in range(0, min(len(images), 20), 10):
-                batch = images[i:i+10]
-                handles = []; media = []
-                for img in batch:
-                    fh = open(img,'rb'); handles.append(fh)
-                    media.append(InputMediaPhoto(fh))
-                try: await ctx.bot.send_media_group(cid, media)
-                finally:
-                    for fh in handles: fh.close()
-                if i+10 < len(images): await asyncio.sleep(1)
-        await wm.delete()
-    except Exception as e:
-        err = str(e)
-        logger.error(f"[Stories] {err}")
-        if 'login' in err.lower() or 'checkpoint' in err.lower() or 'authentication' in err.lower():
-            await wm.edit_text(
-                "🔒 <b>انستغرام يطلب تسجيل دخول</b>\n\n"
-                "الكوكيز موجودة بس انستغرام يرفضها.\n"
-                "جرب تجيب كوكيز جديدة من المتصفح بعد تسجيل الدخول مجدداً.",
-                parse_mode="HTML"
-            )
-        elif 'private' in err.lower():
-            await wm.edit_text("❌ هذا الحساب خاص ولا تتابعه.")
-        elif 'not found' in err.lower() or '404' in err:
-            await wm.edit_text("❌ ما لقيت هذه الستوريات — ربما انتهت أو الحساب مو موجود.")
-        else:
-            await wm.edit_text(f"❌ فشل تحميل الستوريات:\n<code>{err[:150]}</code>", parse_mode="HTML")
-    finally: shutil.rmtree(tmp, ignore_errors=True)
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📥 آخر ستوري", callback_data=f"ist_one_{shash}"),
+        InlineKeyboardButton("📥 جميع الستوريات", callback_data=f"ist_all_{shash}")
+    ]])
+    await msg.reply_text(
+        f"📸 <b>ستوريات @{username}</b>\nاختر:",
+        parse_mode="HTML", reply_markup=markup
+    )
 
 
 async def pinterest_handler(upd, ctx, url, cid):
@@ -1069,102 +1036,172 @@ async def spotify_handler(upd, ctx, url, cid):
     finally: 
         shutil.rmtree(tmp, ignore_errors=True)
 
-async def tiktok_info_handler(upd, ctx, username=None):
-    """دالة جلب معلومات حساب التيك توك وعرض علم الدولة بشكل صحيح 100%"""
+async def tiktok_user_info(upd, ctx, username, cid):
+    """معلومات حساب تيك توك"""
     msg = upd.message
-    cid = msg.chat_id
-    
-    # إذا لم يتم تمرير اليوزر من دالة أخرى، نستخرجه تلقائياً من نص الرسالة (مثال: تيك codexpert)
-    if username is None:
-        text = msg.text or ""
-        parts = text.split(maxsplit=1)
-        username = parts[1] if len(parts) > 1 else ""
 
     username = username.lstrip('@').strip()
+
     if not username:
+
         return await msg.reply_text("❗ مثال: <code>تيك codexpert</code>", parse_mode="HTML")
-        
+
     wm = await msg.reply_text(f"🔍 جاري جلب معلومات @{username}...")
 
+
+
     COUNTRY_FLAG = {
+
         'IQ':'🇮🇶','SA':'🇸🇦','US':'🇺🇸','GB':'🇬🇧','AE':'🇦🇪','EG':'🇪🇬',
+
         'TR':'🇹🇷','IR':'🇮🇷','RU':'🇷🇺','DE':'🇩🇪','FR':'🇫🇷','IN':'🇮🇳',
+
         'CN':'🇨🇳','JP':'🇯🇵','KR':'🇰🇷','BR':'🇧🇷','KW':'🇰🇼','QA':'🇶🇦',
+
         'BH':'🇧🇭','OM':'🇴🇲','JO':'🇯🇴','SY':'🇸🇾','LB':'🇱🇧','YE':'🇾🇪',
+
         'LY':'🇱🇾','TN':'🇹🇳','DZ':'🇩🇿','MA':'🇲🇦','SD':'🇸🇩','PK':'🇵🇰',
+
     }
 
+
+
     def _fetch():
+
         endpoints = [
+
             f"https://www.tikwm.com/api/user/info?unique_id={username}&count=1",
+
             f"https://tikwm.com/api/user/info?unique_id={username}",
+
         ]
+
         headers = {
+
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0",
+
             "Referer": "https://www.tikwm.com/",
+
             "Accept": "application/json",
+
         }
+
         for ep in endpoints:
+
             try:
+
                 r = requests.get(ep, headers=headers, timeout=20)
+
                 data = r.json()
+
                 if data.get('code') == 0:
+
                     return data
+
             except: continue
+
         return {}
 
+
+
     try:
+
         data = await asyncio.get_running_loop().run_in_executor(None, _fetch)
+
         if data.get('code') == 0 and data.get('data'):
+
             d = data['data']
+
             u = d.get('user', d)
+
             stats = d.get('stats', u)
+
             name = u.get('nickname') or u.get('name', username)
+
             uid_str = str(u.get('id', '—'))
+
             followers = (stats.get('followerCount') or u.get('followerCount') or d.get('fans') or 0)
+
             following = (stats.get('followingCount') or u.get('followingCount') or d.get('following') or 0)
+
             likes = (stats.get('heartCount') or u.get('heartCount') or stats.get('diggCount') or d.get('heart') or 0)
+
             videos = (stats.get('videoCount') or u.get('videoCount') or d.get('video') or 0)
+
             bio = u.get('signature','') or '—'
+
             verified = "✅ موثق" if (u.get('verified') or u.get('isVerified')) else "❌ غير موثق"
+
             private = "🔒 خاص" if (u.get('privateAccount') or u.get('secret')) else "🌐 عام"
+
             avatar = u.get('avatarLarger') or u.get('avatarMedium') or u.get('avatarThumb') or u.get('avatar','')
-            
-            # جلب الدولة بنجاح بفحص d أولاً ثم u لضمان ظهور العلم دائماً
-            region = (d.get('region') or u.get('region') or d.get('location') or u.get('location') or '').upper()
+
+            region = (u.get('region') or u.get('location') or '').upper()
+
             country_str = f"{COUNTRY_FLAG.get(region,'🌍')} {region}" if region else "🌍 غير معروف"
-            
+
             create_ts = u.get('createTime') or u.get('createtime') or 0
+
             joined_str = ""
+
             if create_ts:
+
                 try:
+
                     import datetime
+
                     joined_str = "\n📅 <b>تاريخ الانضمام:</b> " + datetime.datetime.fromtimestamp(int(create_ts)).strftime('%Y/%m/%d')
+
                 except: pass
+
             txt = (
+
                 f"🎵 <b>معلومات تيك توك</b>\n\n"
+
                 f"👤 <b>الاسم:</b> {name}\n"
+
                 f"📛 <b>اليوزر:</b> @{username}\n"
+
                 f"🆔 <b>ID:</b> <code>{uid_str}</code>\n"
+
                 f"🌍 <b>الدولة:</b> {country_str}\n"
+
                 f"✅ <b>التوثيق:</b> {verified}\n"
+
                 f"🔒 <b>الحساب:</b> {private}\n"
+
                 f"👥 <b>المتابعون:</b> {followers:,}\n"
+
                 f"➡️ <b>يتابع:</b> {following:,}\n"
+
                 f"❤️ <b>الإعجابات:</b> {likes:,}\n"
+
                 f"🎬 <b>الفيديوهات:</b> {videos:,}\n"
+
                 f"📝 <b>البايو:</b> {bio[:150]}"
+
                 f"{joined_str}\n\n"
+
                 f"🔗 <a href='https://www.tiktok.com/@{username}'>فتح الحساب</a>"
+
             )
+
             await wm.delete()
+
             if avatar:
+
                 try:
+
                     await ctx.bot.send_photo(cid, avatar, caption=txt, parse_mode="HTML")
+
                     return
+
                 except: pass
+
             await msg.reply_text(txt, parse_mode="HTML")
+
         else:
+
             await wm.edit_text(f"❌ ما لقيت حساب @{username}.\nتأكد من اليوزرنيم.")
     except Exception as e:
         logger.error(f"[TT info] {e}")
@@ -1366,6 +1403,32 @@ async def btn_cb(upd, ctx):
     if d == "convert_cancel":
         await q.answer("تم الإلغاء")
         await q.message.delete()
+        return
+
+    # ── أزرار ستوريات انستغرام ──
+    if d.startswith("ist_"):
+        parts = d.split('_')
+        action = parts[1]   # one أو all
+        shash  = parts[2]
+        data   = ctx.bot_data.get(f'ist_{shash}')
+        if not data:
+            return await q.answer("انتهت صلاحية الأزرار. أرسل الرابط مجدداً.", show_alert=True)
+
+        await q.answer()
+        cid_q = q.message.chat_id
+        wm    = await q.message.edit_text("⏳ جاري التحميل...")
+
+        url      = data['url']      # رابط الستوري المحدد (أو الكل)
+        all_url  = data['all_url']  # رابط كل الستوريات
+        uname    = data['uname']
+
+        if action == 'one':
+            await _insta_download_and_send(ctx, cid_q, url, wm,
+                                           username=uname, download_all=False)
+        else:
+            await _insta_download_and_send(ctx, cid_q, all_url, wm,
+                                           username=uname, download_all=True)
+        ctx.bot_data.pop(f'ist_{shash}', None)
         return
 
     # إكس أو
@@ -1992,7 +2055,7 @@ def main():
     app.add_handler(CommandHandler("help",cmd_help))
     app.add_handler(CommandHandler("ping",cmd_ping))
     app.add_handler(CommandHandler("id",cmd_id))
-    app.add_handler(CallbackQueryHandler(btn_cb,pattern=r"^(show_w_|cmd_|dl_|ttt_|convert_)"))
+    app.add_handler(CallbackQueryHandler(btn_cb,pattern=r"^(show_w_|cmd_|dl_|ttt_|convert_|ist_)"))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS,welcome_handler))
     app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.TEXT,edit_handler))
     # تحويل الفيديو المُرسل مباشرة بالخاص
