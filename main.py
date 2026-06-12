@@ -709,35 +709,31 @@ async def tiktok_handler(upd, ctx, url, cid, reply_id):
     if tmp: shutil.rmtree(tmp, ignore_errors=True)
 
 async def _insta_download_and_send(ctx, cid, url, wm, username="", download_all=False, is_story=False):
-    """تحميل انستغرام — فيديو + صور + ستوريات"""
+    """تحميل انستغرام — فيديو + صور + ستوريات (النسخة المطورة والمدمجة)"""
     has_cookies = os.path.exists('cookies.txt')
     tmp = tempfile.mkdtemp()
+    
     base_opts = {
         'outtmpl': os.path.join(tmp, '%(id)s_%(autonumber)03d.%(ext)s'),
-        'quiet': True, 'nocheckcertificate': True, 'geo_bypass': True,
+        'quiet': True, 
+        'nocheckcertificate': True, 
+        'geo_bypass': True,
         'ffmpeg_location': FFMPEG,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
         },
     }
-    if has_cookies: base_opts['cookiefile'] = 'cookies.txt'
+    if has_cookies: 
+        base_opts['cookiefile'] = 'cookies.txt'
 
-    # للبوستات العادية (مو ستوريات): noplaylist=False دائماً لتحميل كل صور الكاروسيل
-    # للستوريات: يعتمد على download_all
     use_playlist = download_all or not is_story
 
     def _dl():
         title = username or 'انستغرام'
-        downloaded_anything = False
-
-        # المحاولات بالترتيب
+        # صيغة شاملة تضمن سحب الصور والفيديوهات معاً من البداية دون تخطي
         attempts = [
-            # محاولة 1: فيديو بجودة عالية (للريلز والفيديو)
-            {'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-             'merge_output_format': 'mp4', 'noplaylist': not use_playlist},
-            # محاولة 2: best format (يشمل الصور والفيديو)
+            {'format': 'bestvideo+bestaudio/best/all', 'noplaylist': not use_playlist},
             {'format': 'best', 'noplaylist': not use_playlist},
-            # محاولة 3: بدون format (yt-dlp يختار) — يحل مشكلة الصور
             {'noplaylist': not use_playlist},
         ]
 
@@ -748,35 +744,30 @@ async def _insta_download_and_send(ctx, cid, url, wm, username="", download_all=
                     info = ydl.extract_info(url, download=True)
                     if info:
                         title = info.get('title', title)
-                # تحقق إذا حُمّل شيء
-                if any(os.path.isfile(os.path.join(tmp, f)) for f in os.listdir(tmp)):
-                    downloaded_anything = True
+                # إذا تم تحميل أي ملف بنجاح، نخرج من المحاولات
+                if any(os.path.isfile(os.path.join(tmp, f)) for f in os.listdir(tmp) if not f.endswith('.part')):
                     break
             except Exception as e:
                 logger.warning(f"[Insta] attempt {attempt.get('format','no-fmt')}: {e}")
-                # نظّف الملفات الجزئية
+                # تنظيف الملفات المؤقتة التالفة
                 for f in list(os.listdir(tmp)):
                     fp = os.path.join(tmp, f)
                     if os.path.isfile(fp) and os.path.getsize(fp) < 1000:
                         try: os.remove(fp)
                         except: pass
-
-        all_files = [os.path.join(tmp, f) for f in os.listdir(tmp)
-                     if os.path.isfile(os.path.join(tmp, f))]
-        videos = sorted(
-            [f for f in all_files if f.endswith(('.mp4', '.webm', '.mkv'))],
-            key=os.path.getsize, reverse=True
-        )
-        # الصور: أقل حد = 500 بايت (بعض صور الستوريات صغيرة)
-        images = sorted(
-            [f for f in all_files if f.endswith(('.jpg', '.jpeg', '.png', '.webp'))
-             and os.path.getsize(f) > 500],
-            key=os.path.getsize, reverse=True
-        )
-        return videos, images, title
+        return title
 
     try:
-        videos, images, title = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        title = await asyncio.get_running_loop().run_in_executor(None, _dl)
+
+        # فرز وترتيب كافة الملفات حسب الاسم لضمان الحفاظ على ترتيب الألبوم الأصلي
+        all_files = sorted([f for f in os.listdir(tmp) if not f.endswith('.part')])
+        
+        video_exts = ('.mp4', '.webm', '.mkv', '.mov')
+        image_exts = ('.jpg', '.jpeg', '.png', '.webp')
+
+        videos = [os.path.join(tmp, f) for f in all_files if f.lower().endswith(video_exts)]
+        images = [os.path.join(tmp, f) for f in all_files if f.lower().endswith(image_exts) and os.path.getsize(os.path.join(tmp, f)) > 500]
 
         if not videos and not images:
             await wm.edit_text(
@@ -787,31 +778,49 @@ async def _insta_download_and_send(ctx, cid, url, wm, username="", download_all=
             return
 
         await wm.edit_text(f"📤 جاري الرفع ({len(videos)} فيديو، {len(images)} صورة)...")
+        cap = f"📸 {title[:60]}" if title else "📸 Instagram"
 
-        # أرسل الفيديوهات
-        for v in videos[:5]:
-            if os.path.getsize(v) < 50 * 1024 * 1024:  # أقل من 50MB
-                with open(v, 'rb') as f:
-                    await ctx.bot.send_video(cid, f, caption=f"📸 {title[:60]}",
-                                             supports_streaming=True)
+        # حالة 1: إذا كان البوست يحتوي على ملف واحد فقط (فيديو أو صورة)
+        if len(all_files) == 1:
+            fp = os.path.join(tmp, all_files[0])
+            if all_files[0].lower().endswith(video_exts):
+                with open(fp, 'rb') as f:
+                    await ctx.bot.send_video(cid, f, caption=cap, supports_streaming=True)
+            else:
+                with open(fp, 'rb') as f:
+                    await ctx.bot.send_photo(cid, f, caption=cap)
+        
+        # حالة 2: ألبوم متعدد أو ستوريات متعددة (يرسل كـ Media Group مختلطة فيديو + صور بنفس الترتيب)
+        else:
+            from telegram import InputMediaPhoto, InputMediaVideo
+            media_group = []
+            opened_files = []
+            
+            for f in all_files:
+                fp = os.path.join(tmp, f)
+                # تخطي الصور الوهمية أو التالفة
+                if f.lower().endswith(image_exts) and os.path.getsize(fp) <= 500:
+                    continue
+                    
+                file_handle = open(fp, 'rb')
+                opened_files.append(file_handle)
+                
+                if f.lower().endswith(video_exts):
+                    media_group.append(InputMediaVideo(file_handle))
+                elif f.lower().endswith(image_exts):
+                    media_group.append(InputMediaPhoto(file_handle))
 
-        # أرسل الصور على دفعات
-        if images:
-            for i in range(0, min(len(images), 20), 10):
-                batch = images[i:i+10]
-                if len(batch) == 1:
-                    with open(batch[0], 'rb') as f:
-                        await ctx.bot.send_photo(cid, f, caption=f"📸 {title[:60]}")
-                else:
-                    handles = []; media_grp = []
-                    for img in batch:
-                        fh = open(img, 'rb'); handles.append(fh)
-                        media_grp.append(InputMediaPhoto(fh))
-                    try:
-                        await ctx.bot.send_media_group(cid, media_grp)
-                    finally:
-                        for fh in handles: fh.close()
-                if i + 10 < len(images): await asyncio.sleep(1)
+            # إرسال على دفعات (كل دفعة 10 ملفات كحد أقصى حسب قيود تلغرام)
+            for i in range(0, len(media_group), 10):
+                batch = media_group[i:i+10]
+                if i == 0:
+                    batch[0].caption = cap # الكابشن يظهر على أول ميديا
+                await ctx.bot.send_media_group(cid, batch)
+                await asyncio.sleep(1)
+
+            # إغلاق الملفات بأمان من الذاكرة
+            for fh in opened_files: 
+                fh.close()
 
         await wm.delete()
 
@@ -891,7 +900,6 @@ async def insta_stories_handler(upd, ctx, username, cid):
         f"📸 <b>ستوريات @{username}</b>\nاختر:",
         parse_mode="HTML", reply_markup=markup
     )
-
 
 async def pinterest_handler(upd, ctx, url, cid):
     """بينترست — فيديو وصور"""
