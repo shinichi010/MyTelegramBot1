@@ -16,7 +16,7 @@ WA3ED_LIST = [
     " هلا بالحلو \ ة 🌸",
     "مالي خلقك 😏",
     "اتسرسح منا وليدي 😤",
-    "وعد هسه مشغولة 😅",
+    "انا هسه مشغولة 😅",
 ]
 KHAYROK_LIST = [
     "لو خيروك: تسافر للمستقبل لو للماضي؟ ⏳",
@@ -71,6 +71,7 @@ TEXT_DL = (
     "📸 انستغرام — ريلز وبوستات* \n"
     "📌 بينترست — فيديو وصور\n"
     "🎵 ساوند كلاود — تحميل موسيقى MP3\n"
+    "🎵 سبوتيفاي — تحميل موسيقى MP3\n"
     "🎵 يوتيوب ميوزك — تحميل MP3 320kbps\n\n"
     "🎵 <b>معلومات تيك توك:</b>\n"
     "• <code>تيك @username</code>\n\n"
@@ -419,17 +420,29 @@ async def yt_handler(upd, ctx, url, uid):
     msg = upd.message
     wm = await msg.reply_text("🔍 جاري جلب معلومات الفيديو من يوتيوب...")
 
+    def _has_yt_cookies():
+        try:
+            with open('cookies.txt','r') as f:
+                c = f.read()
+            return 'youtube.com' in c or 'google.com' in c
+        except: return False
+
     def _get_info():
-        # tv_embedded يتجاوز bot detection بدون كوكيز
-        clients = [
+        has_yt_c = _has_yt_cookies()
+        # رتّب الـ clients: مع كوكيز يوتيوب نبدأ بـ web
+        clients = []
+        if has_yt_c:
+            clients += [['web'], ['web_creator']]
+        clients += [
             ['tv_embedded'],
+            ['web_creator'],
             ['ios'],
+            ['android_vr'],
             ['android'],
             ['mweb'],
             ['web_embedded'],
         ]
-        if os.path.exists('cookies.txt'):
-            clients.insert(0, ['web'])  # web أفضل مع كوكيز
+        last_err = ''
         for client in clients:
             try:
                 opts = {
@@ -441,18 +454,27 @@ async def yt_handler(upd, ctx, url, uid):
                 if os.path.exists('cookies.txt'): opts['cookiefile'] = 'cookies.txt'
                 with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-                    if info: return info
+                    if info:
+                        logger.info(f"[YT] success with client {client}")
+                        return info, has_yt_c
             except Exception as e:
+                last_err = str(e)
                 logger.warning(f"[YT] client {client}: {e}")
                 continue
-        return None
+        return None, has_yt_c
 
-    info = await asyncio.get_running_loop().run_in_executor(None, _get_info)
+    info, has_yt_c = await asyncio.get_running_loop().run_in_executor(None, _get_info)
     if not info:
+        no_yt_hint = (
+            "\n\n🍪 <b>الحل الأفضل:</b> أضف كوكيز يوتيوب لـ COOKIES_DATA\n"
+            "(نفس طريقة X والانستا — من youtube.com)"
+            if not has_yt_c else
+            "\n• جرب تجديد كوكيز يوتيوب"
+        )
         return await wm.edit_text(
-            "❌ فشل جلب بيانات اليوتيوب.\n"
-            "• شغّل: <code>pip install -U yt-dlp</code> على Railway\n"
-            "• أو تأكد أن الرابط عام",
+            "❌ <b>فشل جلب بيانات اليوتيوب</b>\n"
+            "يوتيوب يطلب تسجيل دخول لهذا الفيديو."
+            + no_yt_hint,
             parse_mode="HTML"
         )
 
@@ -686,69 +708,113 @@ async def tiktok_handler(upd, ctx, url, cid, reply_id):
         )
     if tmp: shutil.rmtree(tmp, ignore_errors=True)
 
-async def _insta_download_and_send(ctx, cid, url, wm, username="", download_all=False):
-    """دالة مشتركة لتحميل الانستغرام وإرسال الملفات"""
+async def _insta_download_and_send(ctx, cid, url, wm, username="", download_all=False, is_story=False):
+    """تحميل انستغرام — فيديو + صور + ستوريات"""
     has_cookies = os.path.exists('cookies.txt')
     tmp = tempfile.mkdtemp()
     base_opts = {
-        'outtmpl': os.path.join(tmp,'%(id)s_%(autonumber)s.%(ext)s'),
+        'outtmpl': os.path.join(tmp, '%(id)s_%(autonumber)03d.%(ext)s'),
         'quiet': True, 'nocheckcertificate': True, 'geo_bypass': True,
         'ffmpeg_location': FFMPEG,
-        'http_headers': {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15'},
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
+        },
     }
     if has_cookies: base_opts['cookiefile'] = 'cookies.txt'
 
+    # للبوستات العادية (مو ستوريات): noplaylist=False دائماً لتحميل كل صور الكاروسيل
+    # للستوريات: يعتمد على download_all
+    use_playlist = download_all or not is_story
+
     def _dl():
         title = username or 'انستغرام'
-        # محاولة 1: فيديو بجودة عالية
-        for fmt, extra in [
-            ('bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', {'merge_output_format':'mp4', 'noplaylist': not download_all}),
-            ('best', {'noplaylist': not download_all}),
-        ]:
+        downloaded_anything = False
+
+        # المحاولات بالترتيب
+        attempts = [
+            # محاولة 1: فيديو بجودة عالية (للريلز والفيديو)
+            {'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+             'merge_output_format': 'mp4', 'noplaylist': not use_playlist},
+            # محاولة 2: best format (يشمل الصور والفيديو)
+            {'format': 'best', 'noplaylist': not use_playlist},
+            # محاولة 3: بدون format (yt-dlp يختار) — يحل مشكلة الصور
+            {'noplaylist': not use_playlist},
+        ]
+
+        for attempt in attempts:
             try:
-                opts = {**base_opts, 'format': fmt, **extra}
+                opts = {**base_opts, **attempt}
                 with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=True)
-                    title = info.get('title', title)
-                break
+                    if info:
+                        title = info.get('title', title)
+                # تحقق إذا حُمّل شيء
+                if any(os.path.isfile(os.path.join(tmp, f)) for f in os.listdir(tmp)):
+                    downloaded_anything = True
+                    break
             except Exception as e:
-                logger.warning(f"[Insta dl] fmt={fmt}: {e}")
+                logger.warning(f"[Insta] attempt {attempt.get('format','no-fmt')}: {e}")
+                # نظّف الملفات الجزئية
+                for f in list(os.listdir(tmp)):
+                    fp = os.path.join(tmp, f)
+                    if os.path.isfile(fp) and os.path.getsize(fp) < 1000:
+                        try: os.remove(fp)
+                        except: pass
 
+        all_files = [os.path.join(tmp, f) for f in os.listdir(tmp)
+                     if os.path.isfile(os.path.join(tmp, f))]
         videos = sorted(
-            [os.path.join(tmp,f) for f in os.listdir(tmp) if f.endswith(('.mp4','.webm','.mkv'))],
+            [f for f in all_files if f.endswith(('.mp4', '.webm', '.mkv'))],
             key=os.path.getsize, reverse=True
         )
-        images = [os.path.join(tmp,f) for f in os.listdir(tmp)
-                  if f.endswith(('.jpg','.jpeg','.png','.webp'))
-                  and os.path.getsize(os.path.join(tmp,f)) > 5000]
+        # الصور: أقل حد = 500 بايت (بعض صور الستوريات صغيرة)
+        images = sorted(
+            [f for f in all_files if f.endswith(('.jpg', '.jpeg', '.png', '.webp'))
+             and os.path.getsize(f) > 500],
+            key=os.path.getsize, reverse=True
+        )
         return videos, images, title
 
     try:
         videos, images, title = await asyncio.get_running_loop().run_in_executor(None, _dl)
+
         if not videos and not images:
             await wm.edit_text(
-                "❌ ما لقيت محتوى.\n"
-                + ("• أضف كوكيز انستغرام للمحتوى الخاص\n" if not has_cookies else "")
-                + "• تأكد أن الحساب عام"
+                "❌ ما لقيت محتوى قابل للتحميل.\n"
+                + ("• أضف كوكيز انستغرام للوصول للمحتوى الخاص\n" if not has_cookies else "")
+                + "• تأكد أن الحساب عام والرابط صحيح"
             )
             return
 
-        await wm.edit_text("📤 جاري الرفع...")
+        await wm.edit_text(f"📤 جاري الرفع ({len(videos)} فيديو، {len(images)} صورة)...")
+
+        # أرسل الفيديوهات
         for v in videos[:5]:
-            with open(v,'rb') as f:
-                await ctx.bot.send_video(cid, f, caption=f"📸 {title[:60]}", supports_streaming=True)
+            if os.path.getsize(v) < 50 * 1024 * 1024:  # أقل من 50MB
+                with open(v, 'rb') as f:
+                    await ctx.bot.send_video(cid, f, caption=f"📸 {title[:60]}",
+                                             supports_streaming=True)
+
+        # أرسل الصور على دفعات
         if images:
             for i in range(0, min(len(images), 20), 10):
                 batch = images[i:i+10]
-                handles=[]; media_grp=[]
-                for img in batch:
-                    fh=open(img,'rb'); handles.append(fh)
-                    media_grp.append(InputMediaPhoto(fh))
-                try: await ctx.bot.send_media_group(cid, media_grp)
-                finally:
-                    for fh in handles: fh.close()
-                if i+10 < len(images): await asyncio.sleep(1)
+                if len(batch) == 1:
+                    with open(batch[0], 'rb') as f:
+                        await ctx.bot.send_photo(cid, f, caption=f"📸 {title[:60]}")
+                else:
+                    handles = []; media_grp = []
+                    for img in batch:
+                        fh = open(img, 'rb'); handles.append(fh)
+                        media_grp.append(InputMediaPhoto(fh))
+                    try:
+                        await ctx.bot.send_media_group(cid, media_grp)
+                    finally:
+                        for fh in handles: fh.close()
+                if i + 10 < len(images): await asyncio.sleep(1)
+
         await wm.delete()
+
     except Exception as e:
         err = str(e)
         logger.error(f"[Insta] {err}")
@@ -933,8 +999,20 @@ async def music_handler(upd, ctx, url, cid, platform="🎵"):
         else:
             await wm.edit_text("❌ فشل التحميل.")
     except Exception as e:
-        logger.error(f"[Music] {e}")
-        await wm.edit_text(f"❌ فشل التحميل: {str(e)[:100]}")
+        err = str(e)
+        logger.error(f"[Music] {err}")
+        if 'sign in' in err.lower() or 'bot' in err.lower():
+            has_yt_c = 'youtube.com' in open('cookies.txt').read() if os.path.exists('cookies.txt') else False
+            if not has_yt_c:
+                await wm.edit_text(
+                    "❌ يوتيوب يطلب تسجيل دخول.\n\n"
+                    "🍪 أضف كوكيز يوتيوب لـ COOKIES_DATA\n"
+                    "(نفس طريقة X — من youtube.com أو music.youtube.com)"
+                )
+            else:
+                await wm.edit_text("❌ يوتيوب يرفض الكوكيز. جدّدها.")
+        else:
+            await wm.edit_text(f"❌ فشل التحميل: {err[:100]}")
     finally: shutil.rmtree(tmp, ignore_errors=True)
 
 async def spotify_handler(upd, ctx, url, cid):
@@ -1424,10 +1502,10 @@ async def btn_cb(upd, ctx):
 
         if action == 'one':
             await _insta_download_and_send(ctx, cid_q, url, wm,
-                                           username=uname, download_all=False)
+                                           username=uname, download_all=False, is_story=True)
         else:
             await _insta_download_and_send(ctx, cid_q, all_url, wm,
-                                           username=uname, download_all=True)
+                                           username=uname, download_all=True, is_story=True)
         ctx.bot_data.pop(f'ist_{shash}', None)
         return
 
