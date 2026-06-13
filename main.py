@@ -16,7 +16,7 @@ WA3ED_LIST = [
     " هلا بالحلو \ ة 🌸",
     "مالي خلقك 😏",
     "اتسرسح منا وليدي 😤",
-    "انا هسه مشغولة 😅",
+    "انا هسة مشغولة 😅",
 ]
 KHAYROK_LIST = [
     "لو خيروك: تسافر للمستقبل لو للماضي؟ ⏳",
@@ -809,9 +809,12 @@ async def _insta_download_and_send(ctx, cid, url, wm, username="", download_all=
             [f for f in all_files if f.endswith(('.mp4','.webm','.mkv'))],
             key=os.path.getsize, reverse=True
         )
+        video_stems = {os.path.splitext(v)[0] for v in videos}
         images = sorted(
-            [f for f in all_files if f.endswith(('.jpg','.jpeg','.png','.webp'))
-             and os.path.getsize(f) > 3000],
+            [f for f in all_files
+             if f.endswith(('.jpg','.jpeg','.png','.webp'))
+             and os.path.getsize(f) > 3000
+             and os.path.splitext(f)[0] not in video_stems],
             key=os.path.getsize, reverse=True
         )
         return videos, images, title
@@ -1059,47 +1062,50 @@ async def spotify_handler(upd, ctx, url, cid):
     tmp = tempfile.mkdtemp()
 
     def _dl():
-        opts = {
-            'outtmpl': os.path.join(tmp, '%(title)s.%(ext)s'),
-            'quiet': True, 'nocheckcertificate': True, 'geo_bypass': True,
-            'ffmpeg_location': FFMPEG,
-            'format': 'bestaudio/best',
-            'writethumbnail': True,
-            'postprocessors': [
-                {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '320'},
-                {'key': 'FFmpegMetadata', 'add_metadata': True},
-                {'key': 'EmbedThumbnail'},
-            ],
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36'
-            },
-        }
-        if os.path.exists('cookies.txt'):
-            opts['cookiefile'] = 'cookies.txt'
-        try:
-            with YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                files = [os.path.join(tmp, f) for f in os.listdir(tmp) if f.endswith('.mp3')]
-                return files, info.get('title', ''), info.get('uploader', '') or info.get('artist', '')
-        except Exception as e:
-            return [], '', str(e)
+        import sys, shutil as _sh
+        # spotdl مع --audio youtube-music يستخدم yt-dlp ولا يحتاج Deno
+        spotdl = _sh.which('spotdl') or None
+        if not spotdl:
+            spotdl = os.path.join(os.path.dirname(sys.executable), 'spotdl')
+        if not spotdl or not os.path.exists(spotdl):
+            # fallback: شغّله كـ module
+            spotdl = None
+
+        env = os.environ.copy()
+        env['PATH'] = os.path.dirname(FFMPEG) + os.pathsep + env.get('PATH', '')
+
+        cmd = (
+            [spotdl, url, '--output', tmp, '--format', 'mp3',
+             '--bitrate', '320k', '--audio', 'youtube-music', '--threads', '1']
+            if spotdl else
+            [sys.executable, '-m', 'spotdl', url, '--output', tmp,
+             '--format', 'mp3', '--bitrate', '320k',
+             '--audio', 'youtube-music', '--threads', '1']
+        )
+        logger.info(f"[spotdl] {cmd[0]}")
+        r = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True,
+                           timeout=300, env=env)
+        if r.returncode != 0:
+            logger.error(f"[spotdl] {r.stderr[:300]}")
+        files = [os.path.join(tmp, f) for f in os.listdir(tmp)
+                 if f.endswith(('.mp3', '.m4a', '.ogg'))]
+        return files, r.stdout, r.stderr
 
     try:
-        files, title, artist = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        files, stdout, stderr = await asyncio.get_running_loop().run_in_executor(None, _dl)
         if not files:
+            # استخرج اسم الأغنية وابحث عليها بـ YouTube Music كـ fallback
             return await wm.edit_text(
                 "❌ فشل التحميل من سبوتيفاي.\n\n"
-                "سبوتيفاي يحتاج حساب للتحميل المباشر.\n"
-                "جرب نسخ اسم الأغنية والبحث عنها بيوتيوب ميوزك 🎵"
+                "💡 انسخ اسم الأغنية وابعثه لـ يوتيوب ميوزك:\n"
+                "music.youtube.com وأرسل الرابط هنا 🎵"
             )
-        await wm.edit_text("📤 جاري الرفع...")
-        for fp in files[:5]:
-            name = os.path.basename(fp).replace('.mp3', '')
+        await wm.edit_text(f"📤 جاري الرفع {len(files)} مقطع...")
+        for fp in files[:10]:
+            name = os.path.basename(fp).rsplit('.', 1)[0]
             with open(fp, 'rb') as f:
                 await ctx.bot.send_audio(cid, f,
-                    title=title or name,
-                    performer=artist or 'Spotify',
-                    caption=f"🎧 {(title or name)[:60]}")
+                    title=name[:64], caption=f"🎧 {name[:60]}")
         await wm.delete()
     except Exception as e:
         logger.error(f"[Spotify] {e}")
