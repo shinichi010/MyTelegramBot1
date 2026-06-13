@@ -100,27 +100,38 @@ def _load_cookies():
     import base64
     data = os.environ.get('COOKIES_DATA', '').strip()
     if not data:
-        logger.info("ℹ️ COOKIES_DATA not set — no cookies loaded")
+        logger.info("ℹ️ COOKIES_DATA not set")
         return
+
+    success = False
+
+    # محاولة 1: base64 مع إزالة الفراغات
     try:
-        # نظّف كل الفراغات والـ line breaks (ممكن تصير من Railway)
         clean = ''.join(data.split())
-        content = base64.b64decode(clean).decode('utf-8')
-        with open('cookies.txt', 'w', encoding='utf-8') as f:
-            f.write(content)
-        lines = [l for l in content.splitlines() if l and not l.startswith('#') and '\t' in l]
-        domains = set(l.split('\t')[0].lstrip('.') for l in lines)
-        logger.info(f"✅ cookies.txt loaded — {len(lines)} cookies — domains: {domains}")
+        content = base64.b64decode(clean + '==').decode('utf-8')
+        if '\t' in content:  # تحقق أنه ملف cookies حقيقي
+            with open('cookies.txt', 'w', encoding='utf-8') as f:
+                f.write(content)
+            lines = [l for l in content.splitlines() if l and not l.startswith('#') and '\t' in l]
+            domains = set(l.split('\t')[0].lstrip('.') for l in lines)
+            logger.info(f"✅ cookies.txt loaded (base64) — {len(lines)} cookies — {domains}")
+            success = True
     except Exception as e:
-        logger.error(f"❌ base64 decode failed: {e}")
-        # Fallback: ربما الـ COOKIES_DATA نفسها هي محتوى الملف مباشرة
+        logger.warning(f"[cookies] base64 failed: {e}")
+
+    # محاولة 2: الـ data نفسها هي محتوى الملف
+    if not success:
         try:
-            if '\t' in data and ('instagram' in data or 'x.com' in data or 'twitter' in data):
+            if '\t' in data:
                 with open('cookies.txt', 'w', encoding='utf-8') as f:
                     f.write(data)
-                logger.info("✅ cookies.txt loaded as plain-text fallback")
-        except Exception as e2:
-            logger.error(f"❌ plain-text fallback failed: {e2}")
+                logger.info("✅ cookies.txt loaded (plain text)")
+                success = True
+        except Exception as e:
+            logger.error(f"[cookies] plain text failed: {e}")
+
+    if not success:
+        logger.error("❌ Failed to load cookies from COOKIES_DATA")
 _load_cookies()
 
 def db_get(path: str, default=None):
@@ -200,7 +211,7 @@ async def get_target(upd, ctx):
 # 4. الذكاء الاصطناعي
 # ═══════════════════════════════════════════════════════════════════
 async def ask_ai(prompt: str) -> str:
-    api_key = os.environ.get("GEMINI_KEY", "AQ.Ab8RN6IUpwPLRANOUkyXV6hxc0ukAL2-ef6EXJeMWwtfsa4C0w")
+    api_key = os.environ.get("GEMINI_KEY", "")  # أضف GEMINI_KEY كـ env variable
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
     payload = {
         "systemInstruction": {"parts": [{"text": "أنت مساعد ذكي اسمك سيك، تتحدث باللهجة العراقية أحياناً وتبقى لطيف وخفيف. كن مختصراً ومفيداً."}]},
@@ -211,6 +222,7 @@ async def ask_ai(prompt: str) -> str:
         try:
             r = requests.post(url, json=payload, timeout=30)
             logger.info(f"[AI-Gemini] status={r.status_code}")
+            if not api_key: return "❌ GEMINI_KEY غير مضاف. أضفه كـ environment variable."
             if r.status_code in (401, 403): return "❌ مفتاح Gemini منتهي أو غلط. راجع GEMINI_KEY."
             if r.status_code == 429:
                 # free tier: 15 req/min — انتظر وأعد المحاولة
@@ -1041,103 +1053,60 @@ async def music_handler(upd, ctx, url, cid, platform="🎵"):
     finally: shutil.rmtree(tmp, ignore_errors=True)
 
 async def spotify_handler(upd, ctx, url, cid):
-    """سبوتيفاي — تحميل عبر spotdl مع ربط ميكانيكي صريح لـ ffmpeg لمنع الـ FFmpegError"""
-    import html  # مكتبة أساسية لتنظيف النصوص ومنع أخطاء تليجرام
+    """سبوتيفاي — تحميل عبر yt-dlp مباشرة (لا يحتاج Deno)"""
     msg = upd.message
-    wm = await msg.reply_text("🎧 جاري البحث عن المقطع وتحميله من سبوتيفاي...")
+    wm = await msg.reply_text("🎧 جاري التحميل من سبوتيفاي...")
     tmp = tempfile.mkdtemp()
 
     def _dl():
-        import sys, shutil as _shutil
-        import imageio_ffmpeg  # استدعاء المكتبة للوصول للملف التنفيذي الأصلي
-        
-        # 1. حل مشكلة تسمية FFMPEG لـ spotdl جذرياً
+        opts = {
+            'outtmpl': os.path.join(tmp, '%(title)s.%(ext)s'),
+            'quiet': True, 'nocheckcertificate': True, 'geo_bypass': True,
+            'ffmpeg_location': FFMPEG,
+            'format': 'bestaudio/best',
+            'writethumbnail': True,
+            'postprocessors': [
+                {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '320'},
+                {'key': 'FFmpegMetadata', 'add_metadata': True},
+                {'key': 'EmbedThumbnail'},
+            ],
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36'
+            },
+        }
+        if os.path.exists('cookies.txt'):
+            opts['cookiefile'] = 'cookies.txt'
         try:
-            ffmpeg_real_path = imageio_ffmpeg.get_ffmpeg_exe()
-            local_ffmpeg_path = os.path.join(tmp, 'ffmpeg')
-            
-            # إنشاء اختصار صريح باسم 'ffmpeg' داخل المجلد المؤقت ليطابق طلب الأداة
-            if not os.path.exists(local_ffmpeg_path):
-                try:
-                    os.symlink(ffmpeg_real_path, local_ffmpeg_path)
-                except Exception:
-                    # حل بديل في حال لم يدعم السيرفر الـ Symlink نقوم بنسخه فوراً
-                    _shutil.copy(ffmpeg_real_path, local_ffmpeg_path)
-                # إعطاء صلاحيات التشغيل للملف
-                os.chmod(local_ffmpeg_path, 0o755)
-        except Exception as fe:
-            logger.error(f"[Spotify FFMPEG Setup Error] {fe}")
-
-        # 2. حقن المجلد المؤقت في بداية الـ PATH لكي ترى الأداة ملف الـ ffmpeg الجديد فوراً
-        env = os.environ.copy()
-        env["PATH"] = tmp + os.pathsep + env.get("PATH", "")
-
-        # العثور على أداة spotdl بالسيرفر
-        spotdl_bin = (
-            _shutil.which('spotdl') or
-            _shutil.which(os.path.join(os.path.dirname(sys.executable), 'spotdl')) or
-            None
-        )
-        
-        if spotdl_bin:
-            cmd = [spotdl_bin, url]
-        else:
-            cmd = [sys.executable, '-m', 'spotdl', url]
-            
-        logger.info(f"[spotdl] cmd: {' '.join(cmd)}")
-        
-        # تشغيل الأداة بداخل المجلد المؤقت مع تمرير البيئة المحقونة
-        result = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True, timeout=300, env=env)
-        
-        # البحث عن الملفات الصوتية الناتجة بمختلف الامتدادات
-        files = [os.path.join(tmp, f) for f in os.listdir(tmp) if f.endswith(('.mp3', '.m4a', '.opus', '.wav', '.ogg'))]
-        return files, result.returncode, result.stdout, result.stderr
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                files = [os.path.join(tmp, f) for f in os.listdir(tmp) if f.endswith('.mp3')]
+                return files, info.get('title', ''), info.get('uploader', '') or info.get('artist', '')
+        except Exception as e:
+            return [], '', str(e)
 
     try:
-        files, returncode, stdout, stderr = await asyncio.get_running_loop().run_in_executor(None, _dl)
-        
+        files, title, artist = await asyncio.get_running_loop().run_in_executor(None, _dl)
         if not files:
-            error_log = ""
-            if stderr and stderr.strip():
-                safe_stderr = html.escape(stderr.strip()[:1500])
-                error_log += f"<b>⚙️ STDERR:</b>\n<code>{safe_stderr}</code>\n\n"
-            if stdout and stdout.strip():
-                safe_stdout = html.escape(stdout.strip()[:1500])
-                error_log += f"<b>📊 STDOUT:</b>\n<code>{safe_stdout}</code>"
-            
-            if not error_log:
-                error_log = "لم يتم استخراج أي ملفات صوتية (قد يكون الرابط خاصاً أو السيرفر محظوراً من يوتيوب)."
-
             return await wm.edit_text(
-                f"❌ فشل التحميل من سبوتيفاي.\n\n"
-                f"<b>تقرير الأداة الكامل للصيانة:</b>\n{error_log}\n\n"
-                f"💡 إذا كان الخطأ متعلقاً بالـ Sign in أو الـ Block، تأكد من تحديث الكوكيز بـ COOKIES_DATA.",
-                parse_mode="HTML"
+                "❌ فشل التحميل من سبوتيفاي.\n\n"
+                "سبوتيفاي يحتاج حساب للتحميل المباشر.\n"
+                "جرب نسخ اسم الأغنية والبحث عنها بيوتيوب ميوزك 🎵"
             )
-            
-        await wm.edit_text(f"📤 جاري رفع {len(files)} مقطع...")
-        for fp in files[:10]:
-            name = os.path.basename(fp)
-            for ext in ['.mp3', '.m4a', '.opus', '.wav', '.ogg']:
-                if name.endswith(ext):
-                    name = name.replace(ext, '')
-                    break
+        await wm.edit_text("📤 جاري الرفع...")
+        for fp in files[:5]:
+            name = os.path.basename(fp).replace('.mp3', '')
             with open(fp, 'rb') as f:
-                await ctx.bot.send_audio(cid, f, title=name[:64], caption=f"🎧 {name[:60]}")
+                await ctx.bot.send_audio(cid, f,
+                    title=title or name,
+                    performer=artist or 'Spotify',
+                    caption=f"🎧 {(title or name)[:60]}")
         await wm.delete()
-    except FileNotFoundError:
-        await wm.edit_text(
-            "❌ أداة spotdl غير مثبتة بالسيرفر!\n"
-            "تأكد من إضافتها لملف <code>requirements.txt</code> الخاص بك.",
-            parse_mode="HTML"
-        )
-    except subprocess.TimeoutExpired:
-        await wm.edit_text("❌ انتهى الوقت المحدد (Timeout). المقطع قد يكون طويلاً جداً.")
     except Exception as e:
         logger.error(f"[Spotify] {e}")
-        await wm.edit_text(f"❌ خطأ غير متوقع: {str(e)[:100]}")
-    finally: 
+        await wm.edit_text(f"❌ خطأ: {str(e)[:100]}")
+    finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
 
 async def tiktok_user_info(upd, ctx, username, cid):
     """معلومات حساب تيك توك"""
@@ -2140,19 +2109,47 @@ async def handle_msg(upd, ctx):
 
 async def _keep_alive(app):
     """يمنع Render من تنويم البوت — ping كل 10 دقائق"""
-    import aiohttp
-    url = os.environ.get('RENDER_EXTERNAL_URL', '')
+    url = os.environ.get('RENDER_EXTERNAL_URL', '').strip()
     if not url:
-        return  # مو على Render، ما نحتاجه
+        logger.info("ℹ️ RENDER_EXTERNAL_URL not set — keep_alive disabled")
+        return
+    logger.info(f"✅ keep_alive started → {url}")
     while True:
+        await asyncio.sleep(600)  # 10 دقائق
         try:
-            async with aiohttp.ClientSession() as s:
-                await s.get(url, timeout=aiohttp.ClientTimeout(total=10))
-        except: pass
-        await asyncio.sleep(600)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: requests.get(url, timeout=15)
+            )
+            logger.info("[keep_alive] ping OK")
+        except Exception as e:
+            logger.warning(f"[keep_alive] ping failed: {e}")
+
+def _start_health_server():
+    """سيرفر HTTP بسيط لـ Render health check على port 10000"""
+    import threading
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    class _H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK - Bot is running!")
+        def log_message(self, *a): pass  # أوقف logs الـ HTTP
+    port = int(os.environ.get('PORT', 10000))
+    try:
+        srv = HTTPServer(('0.0.0.0', port), _H)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        logger.info(f"✅ Health server started on port {port}")
+    except Exception as e:
+        logger.warning(f"⚠️ Health server failed: {e}")
 
 def main():
-    token = os.environ.get("BOT_TOKEN","8159446452:AAHvUE5aEvuTmGfwAYAV7EqfshKD9Nv-B5o")
+    token = os.environ.get("BOT_TOKEN", "")
+    if not token:
+        logger.error("❌ BOT_TOKEN not set! Add it as environment variable.")
+        return
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start",cmd_start))
     app.add_handler(CommandHandler("help",cmd_help))
@@ -2182,9 +2179,12 @@ def main():
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,track_msg), group=1)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_msg), group=2)
     logger.info("🚀 Bot started!")
-    # شغّل keep_alive لـ Render
-    loop = asyncio.get_event_loop()
-    loop.create_task(_keep_alive(app))
+    # شغّل HTTP health server لـ Render
+    _start_health_server()
+    # شغّل keep_alive
+    async def _post_init(app):
+        asyncio.create_task(_keep_alive(app))
+    app.post_init = _post_init
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
