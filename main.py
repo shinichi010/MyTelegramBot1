@@ -71,7 +71,6 @@ TEXT_DL = (
     "📸 انستغرام — ريلز وبوستات* \n"
     "📌 بينترست — فيديو وصور\n"
     "🎵 ساوند كلاود — تحميل موسيقى MP3\n"
-    "🎵 سبوتيفاي — تحميل موسيقى MP3\n"
     "🎵 يوتيوب ميوزك — تحميل MP3 320kbps\n\n"
     "🎵 <b>معلومات تيك توك:</b>\n"
     "• <code>تيك @username</code>\n\n"
@@ -709,121 +708,138 @@ async def tiktok_handler(upd, ctx, url, cid, reply_id):
     if tmp: shutil.rmtree(tmp, ignore_errors=True)
 
 async def _insta_download_and_send(ctx, cid, url, wm, username="", download_all=False, is_story=False):
-    """تحميل انستغرام — فيديو + صور + ستوريات (النسخة المطورة والمدمجة)"""
+    """تحميل انستغرام — فيديو + صور ثابتة + ستوريات + كاروسيل"""
     has_cookies = os.path.exists('cookies.txt')
     tmp = tempfile.mkdtemp()
-    
+    ua = 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
     base_opts = {
         'outtmpl': os.path.join(tmp, '%(id)s_%(autonumber)03d.%(ext)s'),
-        'quiet': True, 
-        'nocheckcertificate': True, 
-        'geo_bypass': True,
+        'quiet': True, 'nocheckcertificate': True, 'geo_bypass': True,
         'ffmpeg_location': FFMPEG,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
-        },
+        'http_headers': {'User-Agent': ua},
     }
-    if has_cookies: 
-        base_opts['cookiefile'] = 'cookies.txt'
-
+    if has_cookies: base_opts['cookiefile'] = 'cookies.txt'
     use_playlist = download_all or not is_story
+
+    def _extract_image_urls(info):
+        """استخرج روابط الصور من info object"""
+        urls = []
+        if not info: return urls
+        # كاروسيل (entries)
+        entries = info.get('entries') or []
+        if entries:
+            for e in entries:
+                if e.get('thumbnail'): urls.append(e['thumbnail'])
+                # لو عنده formats وكلها صور
+                for f in e.get('formats', []):
+                    if f.get('ext') in ('jpg','jpeg','png','webp') or                        (f.get('url') and any(x in f.get('url','') for x in ('jpg','jpeg','png','webp','cdninstagram'))):
+                        urls.append(f['url'])
+                        break
+        else:
+            if info.get('thumbnail'): urls.append(info['thumbnail'])
+            for f in info.get('formats', []):
+                if f.get('ext') in ('jpg','jpeg','png','webp') or                    (f.get('url') and 'cdninstagram' in f.get('url','')):
+                    urls.append(f['url'])
+                    break
+        return list(dict.fromkeys(urls))  # أزل التكرار
 
     def _dl():
         title = username or 'انستغرام'
-        # صيغة شاملة تضمن سحب الصور والفيديوهات معاً من البداية دون تخطي
-        attempts = [
-            {'format': 'bestvideo+bestaudio/best/all', 'noplaylist': not use_playlist},
-            {'format': 'best', 'noplaylist': not use_playlist},
-            {'noplaylist': not use_playlist},
-        ]
+        image_urls_from_info = []
 
-        for attempt in attempts:
+        # الخطوة 1: جلب المعلومات بدون تحميل لاستخراج روابط الصور
+        try:
+            info_opts = {**base_opts, 'skip_download': True, 'noplaylist': not use_playlist}
+            with YoutubeDL(info_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if info:
+                    title = info.get('title', title)
+                    image_urls_from_info = _extract_image_urls(info)
+        except Exception as e:
+            logger.warning(f"[Insta info] {e}")
+
+        # الخطوة 2: محاولة تحميل الفيديو
+        for fmt_opts in [
+            {'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+             'merge_output_format': 'mp4', 'noplaylist': not use_playlist},
+            {'format': 'best[ext=mp4]/best', 'noplaylist': not use_playlist},
+        ]:
             try:
-                opts = {**base_opts, **attempt}
+                opts = {**base_opts, **fmt_opts}
                 with YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    if info:
-                        title = info.get('title', title)
-                # إذا تم تحميل أي ملف بنجاح، نخرج من المحاولات
-                if any(os.path.isfile(os.path.join(tmp, f)) for f in os.listdir(tmp) if not f.endswith('.part')):
+                    ydl.extract_info(url, download=True)
+                if any(f.endswith(('.mp4','.webm','.mkv')) for f in os.listdir(tmp)):
                     break
             except Exception as e:
-                logger.warning(f"[Insta] attempt {attempt.get('format','no-fmt')}: {e}")
-                # تنظيف الملفات المؤقتة التالفة
-                for f in list(os.listdir(tmp)):
-                    fp = os.path.join(tmp, f)
-                    if os.path.isfile(fp) and os.path.getsize(fp) < 1000:
-                        try: os.remove(fp)
-                        except: pass
-        return title
+                logger.warning(f"[Insta video dl] {e}")
 
-    try:
-        title = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        # الخطوة 3: تحميل الصور من الروابط مباشرة
+        downloaded_imgs = []
+        if image_urls_from_info:
+            hdrs = {'User-Agent': ua, 'Referer': 'https://www.instagram.com/'}
+            for idx, img_url in enumerate(image_urls_from_info[:20]):
+                try:
+                    r = requests.get(img_url, headers=hdrs, timeout=20)
+                    if r.status_code == 200 and len(r.content) > 5000:
+                        ext = 'jpg'
+                        ct = r.headers.get('content-type', '')
+                        if 'png' in ct: ext = 'png'
+                        elif 'webp' in ct: ext = 'webp'
+                        fpath = os.path.join(tmp, f'img_{idx:03d}.{ext}')
+                        with open(fpath, 'wb') as f:
+                            f.write(r.content)
+                        downloaded_imgs.append(fpath)
+                except Exception as e:
+                    logger.warning(f"[Insta img dl] {e}")
 
-        # فرز وترتيب كافة الملفات حسب الاسم لضمان الحفاظ على ترتيب الألبوم الأصلي
-        all_files = sorted([f for f in os.listdir(tmp) if not f.endswith('.part')])
-        
-        video_exts = ('.mp4', '.webm', '.mkv', '.mov')
-        image_exts = ('.jpg', '.jpeg', '.png', '.webp')
+        all_files = [os.path.join(tmp,f) for f in os.listdir(tmp) if os.path.isfile(os.path.join(tmp,f))]
+        videos = sorted(
+            [f for f in all_files if f.endswith(('.mp4','.webm','.mkv'))],
+            key=os.path.getsize, reverse=True
+        )
+        images = sorted(
+            [f for f in all_files if f.endswith(('.jpg','.jpeg','.png','.webp'))
+             and os.path.getsize(f) > 3000],
+            key=os.path.getsize, reverse=True
+        )
+        return videos, images, title
 
-        videos = [os.path.join(tmp, f) for f in all_files if f.lower().endswith(video_exts)]
-        images = [os.path.join(tmp, f) for f in all_files if f.lower().endswith(image_exts) and os.path.getsize(os.path.join(tmp, f)) > 500]
-
-        if not videos and not images:
-            await wm.edit_text(
-                "❌ ما لقيت محتوى قابل للتحميل.\n"
-                + ("• أضف كوكيز انستغرام للوصول للمحتوى الخاص\n" if not has_cookies else "")
-                + "• تأكد أن الحساب عام والرابط صحيح"
-            )
-            return
-
-        await wm.edit_text(f"📤 جاري الرفع ({len(videos)} فيديو، {len(images)} صورة)...")
-        cap = f"📸 {title[:60]}" if title else "📸 Instagram"
-
-        # حالة 1: إذا كان البوست يحتوي على ملف واحد فقط (فيديو أو صورة)
-        if len(all_files) == 1:
-            fp = os.path.join(tmp, all_files[0])
-            if all_files[0].lower().endswith(video_exts):
-                with open(fp, 'rb') as f:
-                    await ctx.bot.send_video(cid, f, caption=cap, supports_streaming=True)
-            else:
-                with open(fp, 'rb') as f:
-                    await ctx.bot.send_photo(cid, f, caption=cap)
-        
-        # حالة 2: ألبوم متعدد أو ستوريات متعددة (يرسل كـ Media Group مختلطة فيديو + صور بنفس الترتيب)
-        else:
-            from telegram import InputMediaPhoto, InputMediaVideo
-            media_group = []
-            opened_files = []
-            
-            for f in all_files:
-                fp = os.path.join(tmp, f)
-                # تخطي الصور الوهمية أو التالفة
-                if f.lower().endswith(image_exts) and os.path.getsize(fp) <= 500:
-                    continue
-                    
-                file_handle = open(fp, 'rb')
-                opened_files.append(file_handle)
-                
-                if f.lower().endswith(video_exts):
-                    media_group.append(InputMediaVideo(file_handle))
-                elif f.lower().endswith(image_exts):
-                    media_group.append(InputMediaPhoto(file_handle))
-
-            # إرسال على دفعات (كل دفعة 10 ملفات كحد أقصى حسب قيود تلغرام)
-            for i in range(0, len(media_group), 10):
-                batch = media_group[i:i+10]
-                if i == 0:
-                    batch[0].caption = cap # الكابشن يظهر على أول ميديا
-                await ctx.bot.send_media_group(cid, batch)
-                await asyncio.sleep(1)
-
-            # إغلاق الملفات بأمان من الذاكرة
-            for fh in opened_files: 
-                fh.close()
-
+    async def _send(videos, images, title):
+        await wm.edit_text(f"📤 جاري الرفع...")
+        sent = 0
+        for v in videos[:5]:
+            if os.path.getsize(v) < 50*1024*1024:
+                with open(v,'rb') as f:
+                    await ctx.bot.send_video(cid, f, caption=f"📸 {title[:60]}", supports_streaming=True)
+                sent += 1
+        if images:
+            for i in range(0, min(len(images),20), 10):
+                batch = images[i:i+10]
+                if len(batch) == 1:
+                    with open(batch[0],'rb') as f:
+                        await ctx.bot.send_photo(cid, f, caption=f"📸 {title[:60]}")
+                else:
+                    handles=[]; grp=[]
+                    for img in batch:
+                        fh=open(img,'rb'); handles.append(fh)
+                        grp.append(InputMediaPhoto(fh))
+                    try: await ctx.bot.send_media_group(cid, grp)
+                    finally:
+                        for fh in handles: fh.close()
+                sent += len(batch)
+                if i+10 < len(images): await asyncio.sleep(1)
         await wm.delete()
 
+    try:
+        videos, images, title = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        if not videos and not images:
+            await wm.edit_text(
+                "❌ ما لقيت محتوى.\n"
+                + ("• أضف كوكيز انستغرام للمحتوى الخاص\n" if not has_cookies else "")
+                + "• تأكد أن الحساب عام"
+            )
+            return
+        await _send(videos, images, title)
     except Exception as e:
         err = str(e)
         logger.error(f"[Insta] {err}")
@@ -900,6 +916,7 @@ async def insta_stories_handler(upd, ctx, username, cid):
         f"📸 <b>ستوريات @{username}</b>\nاختر:",
         parse_mode="HTML", reply_markup=markup
     )
+
 
 async def pinterest_handler(upd, ctx, url, cid):
     """بينترست — فيديو وصور"""
