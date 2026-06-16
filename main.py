@@ -431,30 +431,26 @@ async def yt_handler(upd, ctx, url, uid):
     msg = upd.message
     wm = await msg.reply_text("🔍 جاري جلب معلومات الفيديو من يوتيوب...")
 
-    def _has_yt_cookies():
-        try:
-            with open('cookies.txt','r') as f:
-                c = f.read()
-            return 'youtube.com' in c or 'google.com' in c
-        except: return False
-
     def _get_info():
-        has_yt_c = _has_yt_cookies()
-        # رتّب الـ clients: مع كوكيز يوتيوب نبدأ بـ web
-        clients = []
-        if has_yt_c:
-            clients += [['web'], ['web_creator']]
-        clients += [
-            ['tv_embedded'],
-            ['web_creator'],
-            ['ios'],
-            ['android_vr'],
-            ['android'],
-            ['mweb'],
-            ['web_embedded'],
+        # tv_embedded يشتغل بدون كوكيز — الكوكيز تخلي يوتيوب يشك
+        # نجرب: بدون كوكيز أولاً، ثم مع كوكيز إذا فشل
+        has_yt_c = os.path.exists('cookies.txt')
+        
+        # المحاولات: client + استخدام الكوكيز أو لا
+        attempts = [
+            # بدون كوكيز — أفضل لتجاوز bot detection
+            (['tv_embedded'], False),
+            (['web_creator'], False),
+            (['ios'], False),
+            (['android_vr'], False),
+            (['android'], False),
+            # مع كوكيز — للمحتوى المقيد بالعمر أو المنطقة
+            (['web'], True),
+            (['mweb'], True),
+            (['web_embedded'], False),
         ]
-        last_err = ''
-        for client in clients:
+        
+        for client, use_cookies in attempts:
             try:
                 opts = {
                     'quiet': True, 'noplaylist': True, 'nocheckcertificate': True,
@@ -462,38 +458,29 @@ async def yt_handler(upd, ctx, url, uid):
                     'extractor_args': {'youtube': {'player_client': client}},
                     'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0'},
                 }
-                if os.path.exists('cookies.txt'): opts['cookiefile'] = 'cookies.txt'
+                if use_cookies and has_yt_c:
+                    opts['cookiefile'] = 'cookies.txt'
                 with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
                     if info:
-                        logger.info(f"[YT] success with client {client}")
+                        logger.info(f"[YT] ✅ client={client} cookies={use_cookies and has_yt_c}")
                         return info, has_yt_c
             except Exception as e:
-                last_err = str(e)
-                logger.warning(f"[YT] client {client}: {e}")
+                logger.warning(f"[YT] client={client}: {str(e)[:80]}")
                 continue
         return None, has_yt_c
 
     info, has_yt_c = await asyncio.get_running_loop().run_in_executor(None, _get_info)
     if not info:
-        if not has_yt_c:
-            return await wm.edit_text(
-                "❌ <b>يوتيوب يطلب تسجيل دخول</b>\n\n"
-                "🍪 <b>الحل:</b> أضف كوكيز من youtube.com لـ COOKIES_DATA\n"
-                "نفس الطريقة اللي سويتها مع X والانستا:\n"
-                "1️⃣ افتح youtube.com وأنت مسجل دخول\n"
-                "2️⃣ استخدم إضافة Get cookies.txt LOCALLY\n"
-                "3️⃣ أضف محتواها لنفس ملف الكوكيز الموجود\n"
-                "4️⃣ حدّث COOKIES_DATA وأعد النشر",
-                parse_mode="HTML"
-            )
-        else:
-            return await wm.edit_text(
-                "❌ <b>يوتيوب يرفض الكوكيز</b>\n\n"
-                "كوكيز يوتيوب موجودة بس انتهت صلاحيتها.\n"
-                "جدّد الكوكيز من youtube.com وحدّث COOKIES_DATA.",
-                parse_mode="HTML"
-            )
+        return await wm.edit_text(
+            "❌ <b>فشل جلب بيانات اليوتيوب</b>\n\n"
+            "يوتيوب صار يبلوك هذه الأيام حتى بدون كوكيز.\n"
+            "الحلول الممكنة:\n"
+            "• جرب الرابط ثاني بعد دقائق\n"
+            "• تأكد أن الفيديو عام وغير مقيد بمنطقة\n"
+            "• جرب رابط أقصر من share ← copy link",
+            parse_mode="HTML"
+        )
 
     # بناء format_map من المعلومات
     format_map = {}
@@ -561,16 +548,19 @@ async def auto_download(upd, ctx, url, cid, platform="🎬", max_height=1440):
         fp, title = await asyncio.get_running_loop().run_in_executor(None, _run)
         active_dl.pop(msg.message_id, None); prog_task.cancel()
         if fp and os.path.exists(fp):
-            await wm.edit_text("📤 جاري الرفع...")
+            try: await ctx.bot.edit_message_text("📤 جاري الرفع...", cid, wm.message_id)
+            except: pass
             with open(fp, 'rb') as f:
                 await ctx.bot.send_video(
                     cid, f,
                     caption=f"{platform} {title[:60]}" if title else platform,
                     supports_streaming=True
                 )
-            await wm.delete()
+            try: await ctx.bot.delete_message(cid, wm.message_id)
+            except: pass
         else:
-            await wm.edit_text("❌ فشل التحميل. تأكد أن الرابط عام.")
+            try: await ctx.bot.edit_message_text("❌ فشل التحميل. تأكد أن الرابط عام.", cid, wm.message_id)
+            except: pass
     except Exception as e:
         active_dl.pop(msg.message_id, None); prog_task.cancel()
         logger.error(f"[auto_dl] {e}")
