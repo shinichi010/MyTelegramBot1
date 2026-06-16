@@ -16,7 +16,7 @@ WA3ED_LIST = [
     " هلا بالحلو \ ة 🌸",
     "مالي خلقك 😏",
     "اتسرسح منا وليدي 😤",
-    "انا هسة مشغولة 😅",
+    "انا هسه مشغولة 😅",
 ]
 KHAYROK_LIST = [
     "لو خيروك: تسافر للمستقبل لو للماضي؟ ⏳",
@@ -476,18 +476,24 @@ async def yt_handler(upd, ctx, url, uid):
 
     info, has_yt_c = await asyncio.get_running_loop().run_in_executor(None, _get_info)
     if not info:
-        no_yt_hint = (
-            "\n\n🍪 <b>الحل الأفضل:</b> أضف كوكيز يوتيوب لـ COOKIES_DATA\n"
-            "(نفس طريقة X والانستا — من youtube.com)"
-            if not has_yt_c else
-            "\n• جرب تجديد كوكيز يوتيوب"
-        )
-        return await wm.edit_text(
-            "❌ <b>فشل جلب بيانات اليوتيوب</b>\n"
-            "يوتيوب يطلب تسجيل دخول لهذا الفيديو."
-            + no_yt_hint,
-            parse_mode="HTML"
-        )
+        if not has_yt_c:
+            return await wm.edit_text(
+                "❌ <b>يوتيوب يطلب تسجيل دخول</b>\n\n"
+                "🍪 <b>الحل:</b> أضف كوكيز من youtube.com لـ COOKIES_DATA\n"
+                "نفس الطريقة اللي سويتها مع X والانستا:\n"
+                "1️⃣ افتح youtube.com وأنت مسجل دخول\n"
+                "2️⃣ استخدم إضافة Get cookies.txt LOCALLY\n"
+                "3️⃣ أضف محتواها لنفس ملف الكوكيز الموجود\n"
+                "4️⃣ حدّث COOKIES_DATA وأعد النشر",
+                parse_mode="HTML"
+            )
+        else:
+            return await wm.edit_text(
+                "❌ <b>يوتيوب يرفض الكوكيز</b>\n\n"
+                "كوكيز يوتيوب موجودة بس انتهت صلاحيتها.\n"
+                "جدّد الكوكيز من youtube.com وحدّث COOKIES_DATA.",
+                parse_mode="HTML"
+            )
 
     # بناء format_map من المعلومات
     format_map = {}
@@ -1074,22 +1080,30 @@ async def spotify_handler(upd, ctx, url, cid):
         env = os.environ.copy()
         env['PATH'] = os.path.dirname(FFMPEG) + os.pathsep + env.get('PATH', '')
 
-        cmd = (
-            [spotdl, url, '--output', tmp, '--format', 'mp3',
-             '--bitrate', '320k', '--audio', 'youtube-music', '--threads', '1']
+        base_cmd = (
+            [spotdl, url, '--output', tmp, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
             if spotdl else
             [sys.executable, '-m', 'spotdl', url, '--output', tmp,
-             '--format', 'mp3', '--bitrate', '320k',
-             '--audio', 'youtube-music', '--threads', '1']
+             '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
         )
-        logger.info(f"[spotdl] {cmd[0]}")
-        r = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True,
-                           timeout=300, env=env)
-        if r.returncode != 0:
-            logger.error(f"[spotdl] {r.stderr[:300]}")
-        files = [os.path.join(tmp, f) for f in os.listdir(tmp)
-                 if f.endswith(('.mp3', '.m4a', '.ogg'))]
-        return files, r.stdout, r.stderr
+        # جرب عدة مصادر: youtube-music أولاً ثم soundcloud
+        last_stderr = ''
+        for audio_src in ['youtube-music', 'soundcloud', 'youtube']:
+            try:
+                cmd = base_cmd + ['--audio', audio_src]
+                logger.info(f"[spotdl] trying {audio_src}")
+                r = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True,
+                                   timeout=240, env=env)
+                files_now = [os.path.join(tmp, f) for f in os.listdir(tmp)
+                             if f.endswith(('.mp3', '.m4a', '.ogg'))]
+                if files_now:
+                    logger.info(f"[spotdl] success with {audio_src}")
+                    return files_now, r.stdout, r.stderr
+                last_stderr = r.stderr
+            except Exception as e:
+                logger.warning(f"[spotdl] {audio_src} failed: {e}")
+                last_stderr = str(e)
+        return [], '', last_stderr
 
     try:
         files, stdout, stderr = await asyncio.get_running_loop().run_in_executor(None, _dl)
