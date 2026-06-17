@@ -1490,71 +1490,103 @@ async def music_handler(upd, ctx, url, cid, platform="🎵"):
     finally: shutil.rmtree(tmp, ignore_errors=True)
 
 async def spotify_handler(upd, ctx, url, cid):
-    """سبوتيفاي — تحميل عبر yt-dlp مباشرة (لا يحتاج Deno)"""
+    """سبوتيفاي — تحميل عبر spotdl مع ربط ميكانيكي صريح لـ ffmpeg لمنع الـ FFmpegError"""
+    import html  # مكتبة أساسية لتنظيف النصوص ومنع أخطاء تليجرام
     msg = upd.message
-    wm = await msg.reply_text("🎧 جاري التحميل من سبوتيفاي...")
+    wm = await msg.reply_text("🎧 جاري البحث عن المقطع وتحميله من سبوتيفاي...")
     tmp = tempfile.mkdtemp()
 
     def _dl():
-        import sys, shutil as _sh
-        # spotdl مع --audio youtube-music يستخدم yt-dlp ولا يحتاج Deno
-        spotdl = _sh.which('spotdl') or None
-        if not spotdl:
-            spotdl = os.path.join(os.path.dirname(sys.executable), 'spotdl')
-        if not spotdl or not os.path.exists(spotdl):
-            # fallback: شغّله كـ module
-            spotdl = None
+        import sys, shutil as _shutil
+        import imageio_ffmpeg  # استدعاء المكتبة للوصول للملف التنفيذي الأصلي
+        
+        # 1. حل مشكلة تسمية FFMPEG لـ spotdl جذرياً
+        try:
+            ffmpeg_real_path = imageio_ffmpeg.get_ffmpeg_exe()
+            local_ffmpeg_path = os.path.join(tmp, 'ffmpeg')
+            
+            # إنشاء اختصار صريح باسم 'ffmpeg' داخل المجلد المؤقت ليطابق طلب الأداة
+            if not os.path.exists(local_ffmpeg_path):
+                try:
+                    os.symlink(ffmpeg_real_path, local_ffmpeg_path)
+                except Exception:
+                    # حل بديل في حال لم يدعم السيرفر الـ Symlink نقوم بنسخه فوراً
+                    _shutil.copy(ffmpeg_real_path, local_ffmpeg_path)
+                # إعطاء صلاحيات التشغيل للملف
+                os.chmod(local_ffmpeg_path, 0o755)
+        except Exception as fe:
+            logger.error(f"[Spotify FFMPEG Setup Error] {fe}")
 
+        # 2. حقن المجلد المؤقت في بداية الـ PATH لكي ترى الأداة ملف الـ ffmpeg الجديد فوراً
         env = os.environ.copy()
-        env['PATH'] = os.path.dirname(FFMPEG) + os.pathsep + env.get('PATH', '')
+        env["PATH"] = tmp + os.pathsep + env.get("PATH", "")
 
-        base_cmd = (
-            [spotdl, url, '--output', tmp, '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
-            if spotdl else
-            [sys.executable, '-m', 'spotdl', url, '--output', tmp,
-             '--format', 'mp3', '--bitrate', '320k', '--threads', '1']
+        # العثور على أداة spotdl بالسيرفر
+        spotdl_bin = (
+            _shutil.which('spotdl') or
+            _shutil.which(os.path.join(os.path.dirname(sys.executable), 'spotdl')) or
+            None
         )
-        # جرب عدة مصادر: youtube-music أولاً ثم soundcloud
-        last_stderr = ''
-        for audio_src in ['youtube-music', 'soundcloud', 'youtube']:
-            try:
-                cmd = base_cmd + ['--audio', audio_src]
-                logger.info(f"[spotdl] trying {audio_src}")
-                r = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True,
-                                   timeout=240, env=env)
-                files_now = [os.path.join(tmp, f) for f in os.listdir(tmp)
-                             if f.endswith(('.mp3', '.m4a', '.ogg'))]
-                if files_now:
-                    logger.info(f"[spotdl] success with {audio_src}")
-                    return files_now, r.stdout, r.stderr
-                last_stderr = r.stderr
-            except Exception as e:
-                logger.warning(f"[spotdl] {audio_src} failed: {e}")
-                last_stderr = str(e)
-        return [], '', last_stderr
+        
+        if spotdl_bin:
+            cmd = [spotdl_bin, url]
+        else:
+            cmd = [sys.executable, '-m', 'spotdl', url]
+            
+        logger.info(f"[spotdl] cmd: {' '.join(cmd)}")
+        
+        # تشغيل الأداة بداخل المجلد المؤقت مع تمرير البيئة المحقونة
+        result = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True, timeout=300, env=env)
+        
+        # البحث عن الملفات الصوتية الناتجة بمختلف الامتدادات
+        files = [os.path.join(tmp, f) for f in os.listdir(tmp) if f.endswith(('.mp3', '.m4a', '.opus', '.wav', '.ogg'))]
+        return files, result.returncode, result.stdout, result.stderr
 
     try:
-        files, stdout, stderr = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        files, returncode, stdout, stderr = await asyncio.get_running_loop().run_in_executor(None, _dl)
+        
         if not files:
-            # استخرج اسم الأغنية وابحث عليها بـ YouTube Music كـ fallback
+            error_log = ""
+            if stderr and stderr.strip():
+                safe_stderr = html.escape(stderr.strip()[:1500])
+                error_log += f"<b>⚙️ STDERR:</b>\n<code>{safe_stderr}</code>\n\n"
+            if stdout and stdout.strip():
+                safe_stdout = html.escape(stdout.strip()[:1500])
+                error_log += f"<b>📊 STDOUT:</b>\n<code>{safe_stdout}</code>"
+            
+            if not error_log:
+                error_log = "لم يتم استخراج أي ملفات صوتية (قد يكون الرابط خاصاً أو السيرفر محظوراً من يوتيوب)."
+
             return await wm.edit_text(
-                "❌ فشل التحميل من سبوتيفاي.\n\n"
-                "💡 انسخ اسم الأغنية وابعثه لـ يوتيوب ميوزك:\n"
-                "music.youtube.com وأرسل الرابط هنا 🎵"
+                f"❌ فشل التحميل من سبوتيفاي.\n\n"
+                f"<b>تقرير الأداة الكامل للصيانة:</b>\n{error_log}\n\n"
+                f"💡 إذا كان الخطأ متعلقاً بالـ Sign in أو الـ Block، تأكد من تحديث الكوكيز بـ COOKIES_DATA.",
+                parse_mode="HTML"
             )
-        await wm.edit_text(f"📤 جاري الرفع {len(files)} مقطع...")
+            
+        await wm.edit_text(f"📤 جاري رفع {len(files)} مقطع...")
         for fp in files[:10]:
-            name = os.path.basename(fp).rsplit('.', 1)[0]
+            name = os.path.basename(fp)
+            for ext in ['.mp3', '.m4a', '.opus', '.wav', '.ogg']:
+                if name.endswith(ext):
+                    name = name.replace(ext, '')
+                    break
             with open(fp, 'rb') as f:
-                await ctx.bot.send_audio(cid, f,
-                    title=name[:64], caption=f"🎧 {name[:60]}")
+                await ctx.bot.send_audio(cid, f, title=name[:64], caption=f"🎧 {name[:60]}")
         await wm.delete()
+    except FileNotFoundError:
+        await wm.edit_text(
+            "❌ أداة spotdl غير مثبتة بالسيرفر!\n"
+            "تأكد من إضافتها لملف <code>requirements.txt</code> الخاص بك.",
+            parse_mode="HTML"
+        )
+    except subprocess.TimeoutExpired:
+        await wm.edit_text("❌ انتهى الوقت المحدد (Timeout). المقطع قد يكون طويلاً جداً.")
     except Exception as e:
         logger.error(f"[Spotify] {e}")
-        await wm.edit_text(f"❌ خطأ: {str(e)[:100]}")
-    finally:
+        await wm.edit_text(f"❌ خطأ غير متوقع: {str(e)[:100]}")
+    finally: 
         shutil.rmtree(tmp, ignore_errors=True)
-
 
 async def tiktok_user_info(upd, ctx, username, cid):
     """معلومات حساب تيك توك"""
