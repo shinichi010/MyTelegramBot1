@@ -438,18 +438,10 @@ def tiktok_api(url: str):
 # ═══════════════════════════════════════════════════════════════════
 async def yt_handler(upd, ctx, url, uid):
     msg = upd.message
-    dev = is_dev(msg.from_user)
-
-    if not platform_enabled('youtube'):
-        await msg.reply_text(
-            "🔧 التحميل من يوتيوب موقوف مؤقتاً للصيانة." if not dev else
-            "⚙️ [DEV] يوتيوب موقوف — استخدم /admin لتفعيله."
-        )
-        return
-
     wm = await msg.reply_text("🔍 جاري جلب معلومات الفيديو من يوتيوب...")
 
     def _get_info():
+        # tv_embedded يتجاوز bot detection بدون كوكيز
         clients = [
             ['tv_embedded'],
             ['ios'],
@@ -458,8 +450,7 @@ async def yt_handler(upd, ctx, url, uid):
             ['web_embedded'],
         ]
         if os.path.exists('cookies.txt'):
-            clients.insert(0, ['web'])
-        last_err = ""
+            clients.insert(0, ['web'])  # web أفضل مع كوكيز
         for client in clients:
             try:
                 opts = {
@@ -471,28 +462,22 @@ async def yt_handler(upd, ctx, url, uid):
                 if os.path.exists('cookies.txt'): opts['cookiefile'] = 'cookies.txt'
                 with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-                    if info: return info, None
+                    if info: return info
             except Exception as e:
-                last_err = str(e)
                 logger.warning(f"[YT] client {client}: {e}")
                 continue
-        return None, last_err
+        return None
 
-    info, last_err = await asyncio.get_running_loop().run_in_executor(None, _get_info)
+    info = await asyncio.get_running_loop().run_in_executor(None, _get_info)
     if not info:
-        if dev:
-            await wm.edit_text(
-                f"⚙️ <b>[DEV] فشل يوتيوب</b>\n<code>{last_err[:300]}</code>",
-                parse_mode="HTML"
-            )
-        else:
-            await wm.edit_text(
-                "❌ تعذر جلب بيانات الفيديو.\n"
-                "• تأكد أن الرابط صحيح وعام\n"
-                "• حاول مرة ثانية بعد قليل"
-            )
-        return
+        return await wm.edit_text(
+            "❌ فشل جلب بيانات اليوتيوب.\n"
+            "• شغّل: <code>pip install -U yt-dlp</code> على Railway\n"
+            "• أو تأكد أن الرابط عام",
+            parse_mode="HTML"
+        )
 
+    # بناء format_map من المعلومات
     format_map = {}
     for f in info.get('formats', []):
         h = f.get('height')
@@ -505,9 +490,9 @@ async def yt_handler(upd, ctx, url, uid):
     ctx.bot_data[uhash] = url
     ctx.bot_data[url[:60]+'_fmt'] = format_map
 
-    dur   = info.get('duration', 0)
+    dur = info.get('duration', 0)
     views = info.get('view_count', 0)
-    cap   = (
+    cap = (
         f"🎬 <b>{info.get('title','')[:60]}</b>\n"
         f"⏱ {dur//60}:{dur%60:02d}"
         + (f" | 👁 {views:,}" if views else "")
@@ -521,6 +506,7 @@ async def yt_handler(upd, ctx, url, uid):
         await wm.delete()
     except:
         await wm.edit_text(cap, parse_mode="HTML", reply_markup=kb)
+
 
 async def auto_download(upd, ctx, url, cid, platform="🎬", max_height=1440):
     """تحميل تلقائي بأعلى جودة متوفرة (حد أقصى max_height)"""
@@ -573,7 +559,6 @@ async def auto_download(upd, ctx, url, cid, platform="🎬", max_height=1440):
         await wm.edit_text(f"❌ فشل التحميل: {str(e)[:100]}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-
 async def fb_handler(upd, ctx, url, uid):
     """فيس بوك — تحميل تلقائي بأعلى جودة"""
     await auto_download(upd, ctx, url, upd.message.chat_id, "📘")
