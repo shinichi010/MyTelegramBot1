@@ -355,10 +355,12 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
         ]
     else:
         h = int(quality) if quality and str(quality).isdigit() else 720
+        # استخدم format_id المخزن إذا متوفر (يضمن الجودة الصحيحة)
         fmt_info = None
         if ctx:
             raw_data = ctx.bot_data.get(url[:60] + '_fmt', {}) if url else {}
             if isinstance(raw_data, dict):
+                # ابحث عن أقرب height
                 for stored_h, fi in raw_data.items():
                     if abs(int(stored_h) - h) <= h * 0.15:
                         fmt_info = fi; break
@@ -395,7 +397,6 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
         active_dl.pop(mid, None); task.cancel()
         shutil.rmtree(tmp, ignore_errors=True)
         return None, None, None
-
 def tiktok_api(url: str):
     """تيك توك + دوين عبر tikwm API"""
     encoded = requests.utils.quote(url, safe='')
