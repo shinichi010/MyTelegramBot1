@@ -5,3 +5,4 @@ yt-dlp
 ffmpeg
 imageio-ffmpeg
 spotdl
+pip install -U yt-dlp
