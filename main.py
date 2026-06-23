@@ -16,7 +16,7 @@ WA3ED_LIST = [
     " هلا بالحلو \ ة 🌸",
     "مالي خلقك 😏",
     "اتسرسح منا وليدي 😤",
-    "وعد هسه مشغولة 😅",
+    "انا هسه مشغولة 😅",
 ]
 KHAYROK_LIST = [
     "لو خيروك: تسافر للمستقبل لو للماضي؟ ⏳",
@@ -31,6 +31,17 @@ JOKES_LIST = [
     "ليش الكمبيوتر بارد؟ — لأن عنده ويندوز! 🪟",
     "شو تقول السمكة لما اصطدمت بالحائط؟ — دام! 🐟",
 ]
+# ── إعدادات المطور ──
+DEVELOPER_USERNAME = "snh_1"  # يوزر المطور بدون @
+_DISABLED_PLATFORMS = set()   # المنصات الموقوفة مؤقتاً
+
+def is_dev(user) -> bool:
+    """هل المستخدم هو المطور؟"""
+    return (user.username or '').lower().strip('@') == DEVELOPER_USERNAME.lower()
+
+def platform_enabled(name: str) -> bool:
+    return name not in _DISABLED_PLATFORMS
+
 LANG_FLAG = {
     'ar':'🇸🇦','en':'🇬🇧','tr':'🇹🇷','fa':'🇮🇷','ru':'🇷🇺',
     'fr':'🇫🇷','de':'🇩🇪','es':'🇪🇸','hi':'🇮🇳','zh':'🇨🇳',
@@ -344,12 +355,10 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
         ]
     else:
         h = int(quality) if quality and str(quality).isdigit() else 720
-        # استخدم format_id المخزن إذا متوفر (يضمن الجودة الصحيحة)
         fmt_info = None
         if ctx:
             raw_data = ctx.bot_data.get(url[:60] + '_fmt', {}) if url else {}
             if isinstance(raw_data, dict):
-                # ابحث عن أقرب height
                 for stored_h, fi in raw_data.items():
                     if abs(int(stored_h) - h) <= h * 0.15:
                         fmt_info = fi; break
@@ -387,7 +396,6 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
         shutil.rmtree(tmp, ignore_errors=True)
         return None, None, None
 
-# تيك توك + دوين عبر API
 def tiktok_api(url: str):
     """تيك توك + دوين عبر tikwm API"""
     encoded = requests.utils.quote(url, safe='')
@@ -429,28 +437,29 @@ def tiktok_api(url: str):
 # ═══════════════════════════════════════════════════════════════════
 async def yt_handler(upd, ctx, url, uid):
     msg = upd.message
+    dev = is_dev(msg.from_user)
+
+    if not platform_enabled('youtube'):
+        await msg.reply_text(
+            "🔧 التحميل من يوتيوب موقوف مؤقتاً للصيانة." if not dev else
+            "⚙️ [DEV] يوتيوب موقوف — استخدم /admin لتفعيله."
+        )
+        return
+
     wm = await msg.reply_text("🔍 جاري جلب معلومات الفيديو من يوتيوب...")
 
     def _get_info():
-        # tv_embedded يشتغل بدون كوكيز — الكوكيز تخلي يوتيوب يشك
-        # نجرب: بدون كوكيز أولاً، ثم مع كوكيز إذا فشل
-        has_yt_c = os.path.exists('cookies.txt')
-        
-        # المحاولات: client + استخدام الكوكيز أو لا
-        attempts = [
-            # بدون كوكيز — أفضل لتجاوز bot detection
-            (['tv_embedded'], False),
-            (['web_creator'], False),
-            (['ios'], False),
-            (['android_vr'], False),
-            (['android'], False),
-            # مع كوكيز — للمحتوى المقيد بالعمر أو المنطقة
-            (['web'], True),
-            (['mweb'], True),
-            (['web_embedded'], False),
+        clients = [
+            ['tv_embedded'],
+            ['ios'],
+            ['android'],
+            ['mweb'],
+            ['web_embedded'],
         ]
-        
-        for client, use_cookies in attempts:
+        if os.path.exists('cookies.txt'):
+            clients.insert(0, ['web'])
+        last_err = ""
+        for client in clients:
             try:
                 opts = {
                     'quiet': True, 'noplaylist': True, 'nocheckcertificate': True,
@@ -458,31 +467,31 @@ async def yt_handler(upd, ctx, url, uid):
                     'extractor_args': {'youtube': {'player_client': client}},
                     'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0'},
                 }
-                if use_cookies and has_yt_c:
-                    opts['cookiefile'] = 'cookies.txt'
+                if os.path.exists('cookies.txt'): opts['cookiefile'] = 'cookies.txt'
                 with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-                    if info:
-                        logger.info(f"[YT] ✅ client={client} cookies={use_cookies and has_yt_c}")
-                        return info, has_yt_c
+                    if info: return info, None
             except Exception as e:
-                logger.warning(f"[YT] client={client}: {str(e)[:80]}")
+                last_err = str(e)
+                logger.warning(f"[YT] client {client}: {e}")
                 continue
-        return None, has_yt_c
+        return None, last_err
 
-    info, has_yt_c = await asyncio.get_running_loop().run_in_executor(None, _get_info)
+    info, last_err = await asyncio.get_running_loop().run_in_executor(None, _get_info)
     if not info:
-        return await wm.edit_text(
-            "❌ <b>فشل جلب بيانات اليوتيوب</b>\n\n"
-            "يوتيوب صار يبلوك هذه الأيام حتى بدون كوكيز.\n"
-            "الحلول الممكنة:\n"
-            "• جرب الرابط ثاني بعد دقائق\n"
-            "• تأكد أن الفيديو عام وغير مقيد بمنطقة\n"
-            "• جرب رابط أقصر من share ← copy link",
-            parse_mode="HTML"
-        )
+        if dev:
+            await wm.edit_text(
+                f"⚙️ <b>[DEV] فشل يوتيوب</b>\n<code>{last_err[:300]}</code>",
+                parse_mode="HTML"
+            )
+        else:
+            await wm.edit_text(
+                "❌ تعذر جلب بيانات الفيديو.\n"
+                "• تأكد أن الرابط صحيح وعام\n"
+                "• حاول مرة ثانية بعد قليل"
+            )
+        return
 
-    # بناء format_map من المعلومات
     format_map = {}
     for f in info.get('formats', []):
         h = f.get('height')
@@ -495,9 +504,9 @@ async def yt_handler(upd, ctx, url, uid):
     ctx.bot_data[uhash] = url
     ctx.bot_data[url[:60]+'_fmt'] = format_map
 
-    dur = info.get('duration', 0)
+    dur   = info.get('duration', 0)
     views = info.get('view_count', 0)
-    cap = (
+    cap   = (
         f"🎬 <b>{info.get('title','')[:60]}</b>\n"
         f"⏱ {dur//60}:{dur%60:02d}"
         + (f" | 👁 {views:,}" if views else "")
@@ -511,7 +520,6 @@ async def yt_handler(upd, ctx, url, uid):
         await wm.delete()
     except:
         await wm.edit_text(cap, parse_mode="HTML", reply_markup=kb)
-
 
 async def auto_download(upd, ctx, url, cid, platform="🎬", max_height=1440):
     """تحميل تلقائي بأعلى جودة متوفرة (حد أقصى max_height)"""
@@ -548,19 +556,16 @@ async def auto_download(upd, ctx, url, cid, platform="🎬", max_height=1440):
         fp, title = await asyncio.get_running_loop().run_in_executor(None, _run)
         active_dl.pop(msg.message_id, None); prog_task.cancel()
         if fp and os.path.exists(fp):
-            try: await ctx.bot.edit_message_text("📤 جاري الرفع...", cid, wm.message_id)
-            except: pass
+            await wm.edit_text("📤 جاري الرفع...")
             with open(fp, 'rb') as f:
                 await ctx.bot.send_video(
                     cid, f,
                     caption=f"{platform} {title[:60]}" if title else platform,
                     supports_streaming=True
                 )
-            try: await ctx.bot.delete_message(cid, wm.message_id)
-            except: pass
+            await wm.delete()
         else:
-            try: await ctx.bot.edit_message_text("❌ فشل التحميل. تأكد أن الرابط عام.", cid, wm.message_id)
-            except: pass
+            await wm.edit_text("❌ فشل التحميل. تأكد أن الرابط عام.")
     except Exception as e:
         active_dl.pop(msg.message_id, None); prog_task.cancel()
         logger.error(f"[auto_dl] {e}")
@@ -1289,6 +1294,50 @@ async def tiktok_user_info(upd, ctx, username, cid):
         logger.error(f"[TT info] {e}")
         await wm.edit_text(f"❌ خطأ: {str(e)[:100]}")
         
+async def cmd_admin(upd, ctx):
+    """لوحة تحكم المطور — للمطور فقط"""
+    msg = upd.message
+    if not is_dev(msg.from_user):
+        return await msg.reply_text("❌ هذا الأمر للمطور فقط.")
+
+    platforms = ['youtube', 'instagram', 'tiktok', 'facebook', 'x', 'spotify', 'soundcloud', 'pinterest']
+    status_lines = []
+    for p in platforms:
+        icon = "🟢" if platform_enabled(p) else "🔴"
+        status_lines.append(f"{icon} {p}")
+
+    cookies_ok = os.path.exists('cookies.txt')
+    if cookies_ok:
+        try:
+            with open('cookies.txt', 'r') as f: c = f.read()
+            lines = [l for l in c.splitlines() if l and not l.startswith('#') and '\t' in l]
+            domains = set(l.split('\t')[0].lstrip('.') for l in lines)
+            cookie_info = f"✅ {len(lines)} cookie — {', '.join(sorted(domains))}"
+        except:
+            cookie_info = "⚠️ موجود لكن تعذر قراءته"
+    else:
+        cookie_info = "❌ غير موجود"
+
+    db_size = os.path.getsize(os.environ.get('DB_PATH','bot_data.db')) // 1024 if os.path.exists(os.environ.get('DB_PATH','bot_data.db')) else 0
+
+    rows = []
+    for p in platforms:
+        action = "وقف" if platform_enabled(p) else "شغّل"
+        rows.append([InlineKeyboardButton(f"{'🔴 ' if platform_enabled(p) else '🟢 '}{action} {p}",
+                                          callback_data=f"adm_toggle_{p}")])
+    rows.append([InlineKeyboardButton("🔄 تحديث", callback_data="adm_refresh"),
+                 InlineKeyboardButton("🍪 فحص كوكيز", callback_data="adm_cookies")])
+
+    await msg.reply_text(
+        f"⚙️ <b>لوحة تحكم المطور</b>\n\n"
+        f"<b>المنصات:</b>\n" + "\n".join(status_lines) + "\n\n"
+        f"<b>🍪 الكوكيز:</b> {cookie_info}\n"
+        f"<b>💾 قاعدة البيانات:</b> {db_size} KB\n"
+        f"<b>🤖 البوت:</b> @{ctx.bot.username}",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows)
+    )
+
 async def cmd_help(upd, ctx):
     """أمر المساعدة"""
     msg = upd.message
@@ -1487,6 +1536,41 @@ async def btn_cb(upd, ctx):
         await q.message.delete()
         return
 
+    # ── أزرار لوحة المطور ──
+    if d.startswith("adm_"):
+        if not is_dev(q.from_user):
+            return await q.answer("❌ للمطور فقط!", show_alert=True)
+        action = d[4:]
+        if action.startswith("toggle_"):
+            platform = action[7:]
+            if platform in _DISABLED_PLATFORMS:
+                _DISABLED_PLATFORMS.discard(platform)
+                await q.answer(f"✅ {platform} مفعّل")
+            else:
+                _DISABLED_PLATFORMS.add(platform)
+                await q.answer(f"🔴 {platform} موقوف")
+            # تحديث الرسالة
+            await cmd_admin_refresh(q)
+            return
+        if action == "refresh":
+            await q.answer("🔄 تم التحديث")
+            await cmd_admin_refresh(q)
+            return
+        if action == "cookies":
+            if os.path.exists('cookies.txt'):
+                try:
+                    with open('cookies.txt','r') as f: c = f.read()
+                    lines = [l for l in c.splitlines() if l and not l.startswith('#') and '\t' in l]
+                    domains = set(l.split('\t')[0].lstrip('.') for l in lines)
+                    await q.answer(f"✅ {len(lines)} cookies\n{', '.join(sorted(domains))}", show_alert=True)
+                except Exception as e:
+                    await q.answer(f"❌ {e}", show_alert=True)
+            else:
+                raw = os.environ.get('COOKIES_DATA','')
+                await q.answer(f"❌ cookies.txt غير موجود\nCOOKIES_DATA: {'موجود' if raw else 'مو موجود'} ({len(raw)} حرف)", show_alert=True)
+            return
+        return
+
     # ── أزرار ستوريات انستغرام ──
     if d.startswith("ist_"):
         parts = d.split('_')
@@ -1636,6 +1720,29 @@ async def btn_cb(upd, ctx):
 # ═══════════════════════════════════════════════════════════════════
 # 10. معالجات متنوعة
 # ═══════════════════════════════════════════════════════════════════
+async def cmd_admin_refresh(q):
+    """تحديث رسالة لوحة المطور"""
+    platforms = ['youtube', 'instagram', 'tiktok', 'facebook', 'x', 'spotify', 'soundcloud', 'pinterest']
+    status_lines = [f"{'🟢' if platform_enabled(p) else '🔴'} {p}" for p in platforms]
+    cookies_ok = os.path.exists('cookies.txt')
+    cookie_info = "✅ موجود" if cookies_ok else "❌ غير موجود"
+    rows = []
+    for p in platforms:
+        action = "وقف" if platform_enabled(p) else "شغّل"
+        rows.append([InlineKeyboardButton(f"{'🔴 ' if platform_enabled(p) else '🟢 '}{action} {p}",
+                                          callback_data=f"adm_toggle_{p}")])
+    rows.append([InlineKeyboardButton("🔄 تحديث", callback_data="adm_refresh"),
+                 InlineKeyboardButton("🍪 فحص كوكيز", callback_data="adm_cookies")])
+    try:
+        await q.edit_message_text(
+            f"⚙️ <b>لوحة تحكم المطور</b>\n\n"
+            f"<b>المنصات:</b>\n" + "\n".join(status_lines) + "\n\n"
+            f"<b>🍪 الكوكيز:</b> {cookie_info}",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+    except: pass
+
 async def welcome_handler(upd, ctx):
     for m in upd.message.new_chat_members:
         if m.id == ctx.bot.id:
@@ -2162,6 +2269,7 @@ def main():
         return
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start",cmd_start))
+    app.add_handler(CommandHandler("admin",cmd_admin))
     app.add_handler(CommandHandler("help",cmd_help))
     app.add_handler(CommandHandler("ping",cmd_ping))
     app.add_handler(CommandHandler("id",cmd_id))
