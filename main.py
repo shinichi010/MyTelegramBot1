@@ -397,6 +397,8 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
         active_dl.pop(mid, None); task.cancel()
         shutil.rmtree(tmp, ignore_errors=True)
         return None, None, None
+
+# تيك توك + دوين عبر API
 def tiktok_api(url: str):
     """تيك توك + دوين عبر tikwm API"""
     encoded = requests.utils.quote(url, safe='')
@@ -438,10 +440,18 @@ def tiktok_api(url: str):
 # ═══════════════════════════════════════════════════════════════════
 async def yt_handler(upd, ctx, url, uid):
     msg = upd.message
+    dev = is_dev(msg.from_user)
+
+    if not platform_enabled('youtube'):
+        await msg.reply_text(
+            "🔧 التحميل من يوتيوب موقوف مؤقتاً للصيانة." if not dev else
+            "⚙️ [DEV] يوتيوب موقوف — استخدم /admin لتفعيله."
+        )
+        return
+
     wm = await msg.reply_text("🔍 جاري جلب معلومات الفيديو من يوتيوب...")
 
     def _get_info():
-        # tv_embedded يتجاوز bot detection بدون كوكيز
         clients = [
             ['tv_embedded'],
             ['ios'],
@@ -450,7 +460,8 @@ async def yt_handler(upd, ctx, url, uid):
             ['web_embedded'],
         ]
         if os.path.exists('cookies.txt'):
-            clients.insert(0, ['web'])  # web أفضل مع كوكيز
+            clients.insert(0, ['web'])
+        last_err = ""
         for client in clients:
             try:
                 opts = {
@@ -462,22 +473,28 @@ async def yt_handler(upd, ctx, url, uid):
                 if os.path.exists('cookies.txt'): opts['cookiefile'] = 'cookies.txt'
                 with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-                    if info: return info
+                    if info: return info, None
             except Exception as e:
+                last_err = str(e)
                 logger.warning(f"[YT] client {client}: {e}")
                 continue
-        return None
+        return None, last_err
 
-    info = await asyncio.get_running_loop().run_in_executor(None, _get_info)
+    info, last_err = await asyncio.get_running_loop().run_in_executor(None, _get_info)
     if not info:
-        return await wm.edit_text(
-            "❌ فشل جلب بيانات اليوتيوب.\n"
-            "• شغّل: <code>pip install -U yt-dlp</code> على Railway\n"
-            "• أو تأكد أن الرابط عام",
-            parse_mode="HTML"
-        )
+        if dev:
+            await wm.edit_text(
+                f"⚙️ <b>[DEV] فشل يوتيوب</b>\n<code>{last_err[:300]}</code>",
+                parse_mode="HTML"
+            )
+        else:
+            await wm.edit_text(
+                "❌ تعذر جلب بيانات الفيديو.\n"
+                "• تأكد أن الرابط صحيح وعام\n"
+                "• حاول مرة ثانية بعد قليل"
+            )
+        return
 
-    # بناء format_map من المعلومات
     format_map = {}
     for f in info.get('formats', []):
         h = f.get('height')
@@ -490,9 +507,9 @@ async def yt_handler(upd, ctx, url, uid):
     ctx.bot_data[uhash] = url
     ctx.bot_data[url[:60]+'_fmt'] = format_map
 
-    dur = info.get('duration', 0)
+    dur   = info.get('duration', 0)
     views = info.get('view_count', 0)
-    cap = (
+    cap   = (
         f"🎬 <b>{info.get('title','')[:60]}</b>\n"
         f"⏱ {dur//60}:{dur%60:02d}"
         + (f" | 👁 {views:,}" if views else "")
@@ -506,7 +523,6 @@ async def yt_handler(upd, ctx, url, uid):
         await wm.delete()
     except:
         await wm.edit_text(cap, parse_mode="HTML", reply_markup=kb)
-
 
 async def auto_download(upd, ctx, url, cid, platform="🎬", max_height=1440):
     """تحميل تلقائي بأعلى جودة متوفرة (حد أقصى max_height)"""
@@ -559,6 +575,7 @@ async def auto_download(upd, ctx, url, cid, platform="🎬", max_height=1440):
         await wm.edit_text(f"❌ فشل التحميل: {str(e)[:100]}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
 async def fb_handler(upd, ctx, url, uid):
     """فيس بوك — تحميل تلقائي بأعلى جودة"""
     await auto_download(upd, ctx, url, upd.message.chat_id, "📘")
@@ -837,7 +854,7 @@ async def _insta_download_and_send(ctx, cid, url, wm, username="", download_all=
         if not videos and not images:
             await wm.edit_text(
                 "❌ ما لقيت محتوى.\n"
-                + ("• أضف كوكيز انستغرام للمحتوى الخاص\n" if not has_cookies else "")
+                + ("• مشكلة انستغرام c\n" if not has_cookies else "")
                 + "• تأكد أن الحساب عام"
             )
             return
@@ -846,11 +863,11 @@ async def _insta_download_and_send(ctx, cid, url, wm, username="", download_all=
         err = str(e)
         logger.error(f"[Insta] {err}")
         if 'login' in err.lower() or 'checkpoint' in err.lower():
-            await wm.edit_text("🔒 انستغرام يطلب تسجيل دخول. جدّد الكوكيز.")
+            await wm.edit_text("🔒 مشكلة انستغرام c")
         elif 'private' in err.lower():
             await wm.edit_text("❌ الحساب خاص.")
         else:
-            await wm.edit_text(f"❌ فشل: {err[:120]}")
+            await wm.edit_text(f"HAVE FUNNY :)")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1487,8 +1504,7 @@ async def btn_cb(upd, ctx):
                 await q.message.delete()
             except Exception as e: await em(f"❌ فشل الرفع: {str(e)[:80]}")
         else:
-            await em("❌ فشل التحميل.\n• جرب جودة أقل\n• أو جرب لاحقاً")
-        if tmp: shutil.rmtree(tmp, ignore_errors=True)
+            await em("فشل التحميل , انسخ رابط المقطع وارسلهٌ مرة اخرى")
         return
 
     # تحويل فيديو لصوت (من الخاص)
@@ -1513,8 +1529,8 @@ async def btn_cb(upd, ctx):
                     for p in [inp,out]:
                         try: os.remove(p)
                         except: pass
-                else: await q.edit_message_text("❌ ما لقيت الفيديو.")
-            else: await q.edit_message_text("❌ ما لقيت الفيديو الأصلي.")
+                else: await q.edit_message_text("حدث خطأ , رد على المقطع واكتب تحويل")
+            else: await q.edit_message_text("حدث خطأ , رد على المقطع واكتب تحويل")
         except Exception as e: await q.edit_message_text(f"❌ خطأ: {str(e)[:80]}")
         return
     if d == "convert_cancel":
@@ -1898,7 +1914,7 @@ async def handle_msg(upd, ctx):
             else:
                 await msg.reply_text(
                     "💡 <b>شو أقدر أسويلك؟</b>\n\n"
-                    "📥 أرسل رابط للتحميل (يوتيوب، تيك توك، X، فيس بوك، انستغرام، بينترست)\n"
+                    "📥 أرسل رابط للتحميل (يوتيوب، تيك توك، X، فيسبوك، سبوتيفاي، انستغرام، بينترست)\n"
                     "🎵 يوتيوب ميوزك / ساوند كلاود — أرسل الرابط مباشرة\n"
                     "🤖 <code>الذكاء الاصطناعي — قريبا...\n"
                     "🌐 <code>ترجمة [نص]</code> — ترجمة للعربي\n"
