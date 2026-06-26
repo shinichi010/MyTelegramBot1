@@ -301,7 +301,7 @@ def get_qualities(url: str):
         opts.pop('progress_hooks')
         if is_yt:
             # ios يعطي أفضل جودة لـ YouTube
-            opts['extractor_args'] = {'youtube': {'player_client': ['ios', 'android', 'web', 'tv_embedded']}}
+            opts['extractor_args'] = {'youtube': {'player_client': ['ios', 'android', 'web']}}
             opts['http_headers']['User-Agent'] = 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -342,7 +342,7 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
 
     is_yt = bool(re.search(r'(youtube\.com|youtu\.be)', url))
     if is_yt:
-        opts['extractor_args'] = {'youtube': {'player_client': ['ios', 'android', 'web', 'tv_embedded']}}
+        opts['extractor_args'] = {'youtube': {'player_client': ['android', 'ios']}}
         opts['http_headers']['User-Agent'] = 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
 
     if media_type == "audio":
@@ -356,12 +356,25 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
     else:
         h = int(quality) if quality and str(quality).isdigit() else 720
         # استخدم format_id المخزن إذا متوفر (يضمن الجودة الصحيحة)
-        opts['format'] = (
-            f'bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/'
-            f'bestvideo[height<={h}]+bestaudio/'
-            f'best[height<={h}]/best'
-        )
-        opts['format_sort'] = [f'res:{h}', 'ext:mp4', '+codec:h264']
+        fmt_info = None
+        if ctx:
+            raw_data = ctx.bot_data.get(url[:60] + '_fmt', {}) if url else {}
+            if isinstance(raw_data, dict):
+                # ابحث عن أقرب height
+                for stored_h, fi in raw_data.items():
+                    if abs(int(stored_h) - h) <= h * 0.15:
+                        fmt_info = fi; break
+        if fmt_info and fmt_info.get('id'):
+            vid_id = fmt_info['id']
+            opts['format'] = (f'{vid_id}+bestaudio[ext=m4a]/'
+                              f'{vid_id}+bestaudio/'
+                              f'bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/'
+                              f'bestvideo[height<={h}]+bestaudio/best[height<={h}]')
+        else:
+            opts['format'] = (f'bestvideo[height<={h}]+bestaudio/'
+                              f'best[height<={h}][ext=mp4]/best[height<={h}]/'
+                              f'bestvideo+bestaudio/best')
+            opts['format_sort'] = [f'res:{h}', 'ext:mp4', '+codec:h264']
         opts['merge_output_format'] = 'mp4'
 
     active_dl[mid] = "0%"
@@ -384,7 +397,6 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
         active_dl.pop(mid, None); task.cancel()
         shutil.rmtree(tmp, ignore_errors=True)
         return None, None, None
-
 # تيك توك + دوين عبر API
 def tiktok_api(url: str):
     """تيك توك + دوين عبر tikwm API"""
