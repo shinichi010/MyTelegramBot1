@@ -301,7 +301,7 @@ def get_qualities(url: str):
         opts.pop('progress_hooks')
         if is_yt:
             # ios يعطي أفضل جودة لـ YouTube
-            opts['extractor_args'] = {'youtube': {'player_client': ['ios', 'android', 'web']}}
+            opts['extractor_args'] = {'youtube': {'player_client': ['ios', 'android', 'web', 'tv_embedded']}}
             opts['http_headers']['User-Agent'] = 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
