@@ -15,8 +15,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 # يوزر المالك
 OWNER_USERNAME = "snh_1" 
 
-# آيدي القناة
-TARGET_CHANNEL_ID = -1002237077978  
+# 🔴 غير هذا الرقم وخلّي الآيدي مالت قناتك الخاصة اللي طلعتة من البوت (لازم يبدي بـ -100)
+TARGET_CHANNEL_ID = -1004451735544  
 
 maintenance_mode = False
 admins = set()       
@@ -25,10 +25,8 @@ user_messages = {}
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- دالة التحقق من الصلاحيات والتقاط الآيدي تلقائياً ---
 def is_owner(update: Update) -> bool:
     if update.effective_user and update.effective_user.username == OWNER_USERNAME:
-        # التقاط ذكي: بمجرد أن يستخدم المالك البوت، نحفظ الآيدي الخاص به فوراً ليضمن استلام الرسائل
         if update.effective_chat:
             admins.add(update.effective_chat.id)
         return True
@@ -37,7 +35,6 @@ def is_owner(update: Update) -> bool:
 def is_admin(update: Update) -> bool:
     return update.effective_user.id in admins or is_owner(update)
 
-# --- الأوامر الأساسية ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
@@ -84,6 +81,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(text, reply_markup=reply_markup)
 
+# --- التعديل الأهم تم هنا لحل مشكلة النشر ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -103,25 +101,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🟢 تم إيقاف وضع الصيانة. البوت يعمل الآن بشكل طبيعي ويستقبل الرسائل.")
     
     elif data.startswith("forward_"):
-        msg_id = int(data.split("_")[1])
-        
-        if query.message.reply_to_message:
-            source_msg_id = query.message.reply_to_message.message_id
-        else:
-            source_msg_id = msg_id
-
         try:
+            # هنا خلينا البوت ينسخ الرسالة اللي كدامك مباشرة للقناة
             await context.bot.copy_message(
                 chat_id=TARGET_CHANNEL_ID,
                 from_chat_id=query.message.chat_id,
-                message_id=source_msg_id
+                message_id=query.message.message_id
             )
+            # نمسح زر التحويل بعد ما تنشر الرسالة حتى ما تنشر مرتين بالغلط
             await query.edit_message_reply_markup(reply_markup=None)
             await context.bot.send_message(chat_id=query.message.chat_id, text="✅ تم نشر الرسالة بنجاح في القناة المحددة وبشكل مجهول.")
         except Exception as e:
             await context.bot.send_message(
                 chat_id=query.message.chat_id, 
-                text=f"❌ حدث خطأ أثناء النشر تلقائياً.\nتأكد أن البوت مضاف كـ Admin (مشرف) داخل القناة ولديه صلاحية النشر.\nتفاصيل الخطأ: {e}"
+                text=f"❌ حدث خطأ أثناء النشر تلقائياً.\nتفاصيل الخطأ: {e}"
             )
 
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -173,7 +166,6 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text("⚠️ البوت في وضع الصيانة حالياً، لا يمكن استقبال رسائل.")
         return
 
-    # تم مسح التنسيقات (Markdown) لمنع تعطل البوت بسبب علامات _ أو * في الأسماء
     username_str = f"@{user.username}" if user.username else "لا يوجد"
     info_text = f"📬 رسالة طلب جديدة\n" \
                 f"👤 المرسل: {user.full_name}\n" \
