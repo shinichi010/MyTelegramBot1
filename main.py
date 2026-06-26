@@ -301,6 +301,7 @@ def get_qualities(url: str):
         opts.pop('progress_hooks')
         if is_yt:
             # ios يعطي أفضل جودة لـ YouTube
+            opts['extractor_args'] = {'youtube': {'player_client': ['ios', 'android', 'web', 'tv_embedded']}}
             opts['http_headers']['User-Agent'] = 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -341,7 +342,6 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
 
     is_yt = bool(re.search(r'(youtube\.com|youtu\.be)', url))
     if is_yt:
-        opts['extractor_args'] = {'youtube': {'player_client': ['android', 'ios']}}
         opts['http_headers']['User-Agent'] = 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
 
     if media_type == "audio":
