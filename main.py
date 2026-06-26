@@ -397,6 +397,7 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
         active_dl.pop(mid, None); task.cancel()
         shutil.rmtree(tmp, ignore_errors=True)
         return None, None, None
+
 # تيك توك + دوين عبر API
 def tiktok_api(url: str):
     """تيك توك + دوين عبر tikwm API"""
@@ -853,7 +854,7 @@ async def _insta_download_and_send(ctx, cid, url, wm, username="", download_all=
         if not videos and not images:
             await wm.edit_text(
                 "❌ ما لقيت محتوى.\n"
-                + ("• مشكلة انستغرام c\n" if not has_cookies else "")
+                + ("• أضف كوكيز انستغرام للمحتوى الخاص\n" if not has_cookies else "")
                 + "• تأكد أن الحساب عام"
             )
             return
@@ -862,11 +863,11 @@ async def _insta_download_and_send(ctx, cid, url, wm, username="", download_all=
         err = str(e)
         logger.error(f"[Insta] {err}")
         if 'login' in err.lower() or 'checkpoint' in err.lower():
-            await wm.edit_text("🔒 مشكلة انستغرام c")
+            await wm.edit_text("🔒 انستغرام يطلب تسجيل دخول. جدّد الكوكيز.")
         elif 'private' in err.lower():
             await wm.edit_text("❌ الحساب خاص.")
         else:
-            await wm.edit_text(f"HAVE FUNNY :)")
+            await wm.edit_text(f"❌ فشل: {err[:120]}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1503,7 +1504,8 @@ async def btn_cb(upd, ctx):
                 await q.message.delete()
             except Exception as e: await em(f"❌ فشل الرفع: {str(e)[:80]}")
         else:
-            await em("فشل التحميل , انسخ رابط المقطع وارسلهٌ مرة اخرى")
+            await em("❌ فشل التحميل.\n• جرب جودة أقل\n• أو جرب لاحقاً")
+        if tmp: shutil.rmtree(tmp, ignore_errors=True)
         return
 
     # تحويل فيديو لصوت (من الخاص)
@@ -1528,8 +1530,8 @@ async def btn_cb(upd, ctx):
                     for p in [inp,out]:
                         try: os.remove(p)
                         except: pass
-                else: await q.edit_message_text("حدث خطأ , رد على المقطع واكتب تحويل")
-            else: await q.edit_message_text("حدث خطأ , رد على المقطع واكتب تحويل")
+                else: await q.edit_message_text("❌ ما لقيت الفيديو.")
+            else: await q.edit_message_text("❌ ما لقيت الفيديو الأصلي.")
         except Exception as e: await q.edit_message_text(f"❌ خطأ: {str(e)[:80]}")
         return
     if d == "convert_cancel":
@@ -1913,7 +1915,7 @@ async def handle_msg(upd, ctx):
             else:
                 await msg.reply_text(
                     "💡 <b>شو أقدر أسويلك؟</b>\n\n"
-                    "📥 أرسل رابط للتحميل (يوتيوب، تيك توك، X، فيسبوك، سبوتيفاي، انستغرام، بينترست)\n"
+                    "📥 أرسل رابط للتحميل (يوتيوب، تيك توك، X، فيس بوك، انستغرام، بينترست)\n"
                     "🎵 يوتيوب ميوزك / ساوند كلاود — أرسل الرابط مباشرة\n"
                     "🤖 <code>الذكاء الاصطناعي — قريبا...\n"
                     "🌐 <code>ترجمة [نص]</code> — ترجمة للعربي\n"
