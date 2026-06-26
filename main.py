@@ -364,16 +364,12 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
                 for stored_h, fi in raw_data.items():
                     if abs(int(stored_h) - h) <= h * 0.15:
                         fmt_info = fi; break
-        if fmt_info and fmt_info.get('id'):
-            vid_id = fmt_info['id']
-            opts['format'] = (f'{vid_id}+bestaudio[ext=m4a]/'
-                              f'{vid_id}+bestaudio/'
-                              f'bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/'
-                              f'bestvideo[height<={h}]+bestaudio/best[height<={h}]')
-        else:
-            opts['format'] = (f'bestvideo[height<={h}]+bestaudio/'
-                              f'best[height<={h}][ext=mp4]/best[height<={h}]/'
-                              f'bestvideo+bestaudio/best')
+opts['format'] = (
+    f'bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/'
+    f'bestvideo[height<={h}]+bestaudio/'
+    f'best[height<={h}]/best'
+)
+opts['format_sort'] = [f'res:{h}', 'ext:mp4', '+codec:h264']
             opts['format_sort'] = [f'res:{h}', 'ext:mp4', '+codec:h264']
         opts['merge_output_format'] = 'mp4'
 
