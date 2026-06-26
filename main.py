@@ -356,22 +356,14 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
     else:
         h = int(quality) if quality and str(quality).isdigit() else 720
         # استخدم format_id المخزن إذا متوفر (يضمن الجودة الصحيحة)
-        fmt_info = None
-        if ctx:
-            raw_data = ctx.bot_data.get(url[:60] + '_fmt', {}) if url else {}
-            if isinstance(raw_data, dict):
-                # ابحث عن أقرب height
-                for stored_h, fi in raw_data.items():
-                    if abs(int(stored_h) - h) <= h * 0.15:
-                        fmt_info = fi; break
+  h = int(quality) if quality and str(quality).isdigit() else 720
 opts['format'] = (
     f'bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/'
     f'bestvideo[height<={h}]+bestaudio/'
     f'best[height<={h}]/best'
 )
 opts['format_sort'] = [f'res:{h}', 'ext:mp4', '+codec:h264']
-            opts['format_sort'] = [f'res:{h}', 'ext:mp4', '+codec:h264']
-        opts['merge_output_format'] = 'mp4'
+opts['merge_output_format'] = 'mp4'
 
     active_dl[mid] = "0%"
     task = asyncio.create_task(_progress_updater(ctx, cid, mid, smid, is_photo))
