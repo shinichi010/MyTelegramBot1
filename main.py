@@ -356,7 +356,6 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
     else:
         h = int(quality) if quality and str(quality).isdigit() else 720
         # استخدم format_id المخزن إذا متوفر (يضمن الجودة الصحيحة)
-  h = int(quality) if quality and str(quality).isdigit() else 720
 opts['format'] = (
     f'bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/'
     f'bestvideo[height<={h}]+bestaudio/'
