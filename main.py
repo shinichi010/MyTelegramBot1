@@ -356,16 +356,16 @@ async def do_download(url, media_type, quality, mid, cid, ctx, smid, is_photo=Fa
     else:
         h = int(quality) if quality and str(quality).isdigit() else 720
         # استخدم format_id المخزن إذا متوفر (يضمن الجودة الصحيحة)
-opts['format'] = (
-    f'bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/'
-    f'bestvideo[height<={h}]+bestaudio/'
-    f'best[height<={h}]/best'
-)
-opts['format_sort'] = [f'res:{h}', 'ext:mp4', '+codec:h264']
-opts['merge_output_format'] = 'mp4'
+        opts['format'] = (
+            f'bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/'
+            f'bestvideo[height<={h}]+bestaudio/'
+            f'best[height<={h}]/best'
+        )
+        opts['format_sort'] = [f'res:{h}', 'ext:mp4', '+codec:h264']
+        opts['merge_output_format'] = 'mp4'
 
-active_dl[mid] = "0%"
-task = asyncio.create_task(_progress_updater(ctx, cid, mid, smid, is_photo))
+    active_dl[mid] = "0%"
+    task = asyncio.create_task(_progress_updater(ctx, cid, mid, smid, is_photo))
 
     def run():
         with YoutubeDL(opts) as ydl:
