@@ -15,21 +15,21 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 # يوزر المالك (أنت)
 OWNER_USERNAME = "snh_1" 
 
-# يوزر المشرف الثابت الجديد
+# يوزر المشرف الثابت 
 FIXED_ADMIN_USERNAME = "x_mzer"
 
-# آيدي القناة
+# 🔴 لا تنسى تخلي الآيدي مال قناتك الخاصة هنا
 TARGET_CHANNEL_ID = -1004451735544  
 
 maintenance_mode = False
 admins = set()       
 user_messages = {}   
-total_received = 0  # إضافة: عداد الملفات المستلمة
+total_received = 0  
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- التحقق من الصلاحيات والتقاط الآيدي ---
+# --- التحقق من الصلاحيات ---
 def is_owner(update: Update) -> bool:
     if update.effective_user and update.effective_user.username == OWNER_USERNAME:
         if update.effective_chat:
@@ -51,7 +51,6 @@ def is_admin(update: Update) -> bool:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    # ترحيب خاص بالمالك
     if is_owner(update):
         await update.message.reply_text(
             f"أهلاً بك يا مطور @{OWNER_USERNAME}! تم تفعيل صلاحياتك الإدارية.\n"
@@ -59,20 +58,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ترحيب خاص بالمشرف الثابت
     if is_fixed_admin(update):
         await update.message.reply_text(
             f"أهلاً بك @{FIXED_ADMIN_USERNAME}! أنت مشرف ثابت في هذا البوت.\n"
-            "ستصلك تصاميم وملفات الطلاب هنا تلقائياً، ويمكنك تحويلها للقناة."
+            "ستصلك تصاميم وملفات الطلاب هنا تلقائياً."
         )
         return
 
-    # إذا كان الاستلام متوقف
     if maintenance_mode and not is_admin(update):
         await update.message.reply_text("عذراً، تم إيقاف استقبال الملفات والرسائل حالياً.")
         return
 
-    # رسالة الترحيب للطلاب (حسب طلبك)
     await update.message.reply_text("اهلا بك ارسل ملفك وراح يوصل للمشرفين.")
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -90,7 +86,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "استخدم الأزرار أدناه للتحكم:"
     )
     
-    # أزرار الإيقاف والتشغيل (حسب طلبك)
     keyboard = [
         [
             InlineKeyboardButton("⏸ إيقاف الاستقبال", callback_data="m_on"),
@@ -130,7 +125,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_id=query.message.message_id
             )
             await query.edit_message_reply_markup(reply_markup=None)
-            await context.bot.send_message(chat_id=query.message.chat_id, text="✅ تم نشر الملف/الرسالة بنجاح في القناة.")
+            await context.bot.send_message(chat_id=query.message.chat_id, text="✅ تم نشر الطلب بنجاح في القناة.")
         except Exception as e:
             await context.bot.send_message(
                 chat_id=query.message.chat_id, 
@@ -161,6 +156,7 @@ async def rem_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ يرجى إدخال آيدي رقمي صحيح.")
 
+# --- التعديل الأساسي للتحويل التلقائي ---
 async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_chat.id
@@ -187,11 +183,12 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text("⚠️ نعتذر، استلام الملفات متوقف حالياً من قبل الإدارة.")
         return
 
-    # زيادة عداد الطلبات
     total_received += 1
 
-    # تحديد نوع المرفق لتسهيل الفرز على المشرفين
+    # تحديد نوع المرفق 
     content_type = "نص 📝"
+    is_auto_forwarded = False
+
     if update.message.document:
         content_type = "ملف 📄"
     elif update.message.photo:
@@ -199,19 +196,43 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
     elif update.message.video:
         content_type = "فيديو 🎥"
 
+    # التحويل التلقائي (فقط للملفات والصور)
+    if update.message.document or update.message.photo:
+        try:
+            # هنا يتم التحويل للقناة مع وضع اسم المرسل فقط كـ Caption (وصف) للملف
+            await context.bot.copy_message(
+                chat_id=TARGET_CHANNEL_ID,
+                from_chat_id=chat_id,
+                message_id=update.message.message_id,
+                caption=f"👤 المرسل: {user.full_name}"
+            )
+            is_auto_forwarded = True
+        except Exception as e:
+            logger.error(f"فشل التحويل التلقائي للقناة: {e}")
+
+    # تجهيز رسالة الإشعار للمشرفين
     username_str = f"@{user.username}" if user.username else "لا يوجد"
-    info_text = f"📬 طلب تصميم جديد\n" \
+    info_text = f"📬 طلب جديد\n" \
                 f"👤 المرسل: {user.full_name}\n" \
                 f"🔗 اليوزر: {username_str}\n" \
-                f"نوع المرفق: {content_type}\n" \
-                f"--- الطلب بالأسفل ---"
+                f"نوع المرفق: {content_type}\n"
 
+    # إضافة حالة التحويل لرسالة المشرف
+    if is_auto_forwarded:
+        info_text += "✅ حالة التحويل: (تم النشر في القناة تلقائياً)\n--- الطلب بالأسفل ---"
+    else:
+        info_text += "⚠️ حالة التحويل: (يحتاج تحويل يدوي للقناة)\n--- الطلب بالأسفل ---"
+
+    # إرسال الإشعار للمشرفين
     for admin_id in admins:
         try:
             await context.bot.send_message(chat_id=admin_id, text=info_text)
             
-            keyboard = [[InlineKeyboardButton("📢 تحويل فوري للقناة", callback_data=f"forward_{update.message.message_id}")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+            # إذا لم يتم التحويل تلقائياً، نضيف زر التحويل اليدوي، وإلا نرسل الرسالة بدون زر
+            reply_markup = None
+            if not is_auto_forwarded:
+                keyboard = [[InlineKeyboardButton("📢 تحويل فوري للقناة", callback_data=f"forward_{update.message.message_id}")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
             
             sent_msg = await context.bot.copy_message(
                 chat_id=admin_id,
@@ -225,7 +246,6 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
         except Exception as e:
             logger.error(f"فشل إرسال الرسالة للمشرف {admin_id}: {e}")
 
-    # رسالة التأكيد (حسب طلبك)
     await update.message.reply_text("تم الاستلام بنجاح")
 
 def main():
