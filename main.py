@@ -71,6 +71,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("اهلا بك ارسل ملفك وراح يوصل للمشرفين.")
 
+# --- أمر المساعدة /help ---
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "في حال واجهت أي مشكلة أثناء إرسال الملفات أو كان لديك استفسار، "
+        "يرجى التواصل مع الفريق :\n\n"
+        f"👨‍💻 : @{OWNER_USERNAME}\n"
+        f"👨‍💼 : @{FIXED_ADMIN_USERNAME}"
+    )
+    await update.message.reply_text(help_text)
+
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         await update.message.reply_text("عذراً، هذا الأمر مخصص للمشرفين فقط.")
@@ -156,7 +166,7 @@ async def rem_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ يرجى إدخال آيدي رقمي صحيح.")
 
-# --- التعديل الأساسي للتحويل التلقائي ---
+# --- معالجة الرسائل والتحويل التلقائي ---
 async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_chat.id
@@ -173,9 +183,9 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
                         from_chat_id=chat_id,
                         message_id=update.message.message_id
                     )
-                    await update.message.reply_text("✅ تم إرسال ردك إلى المستخدم بنجاح.")
+                    await update.message.reply_text("✅ تم إرسال ردك بنجاح.")
                 except Exception as e:
-                    await update.message.reply_text(f"❌ فشل إرسال الرد للمستخدم: {e}")
+                    await update.message.reply_text(f"❌ فشل إرسال الرد : اضغط او ارسل /help {e}")
             return
         return
 
@@ -185,7 +195,6 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
 
     total_received += 1
 
-    # تحديد نوع المرفق 
     content_type = "نص 📝"
     is_auto_forwarded = False
 
@@ -196,10 +205,8 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
     elif update.message.video:
         content_type = "فيديو 🎥"
 
-    # التحويل التلقائي (فقط للملفات والصور)
     if update.message.document or update.message.photo:
         try:
-            # هنا يتم التحويل للقناة مع وضع اسم المرسل فقط كـ Caption (وصف) للملف
             await context.bot.copy_message(
                 chat_id=TARGET_CHANNEL_ID,
                 from_chat_id=chat_id,
@@ -210,25 +217,21 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
         except Exception as e:
             logger.error(f"فشل التحويل التلقائي للقناة: {e}")
 
-    # تجهيز رسالة الإشعار للمشرفين
     username_str = f"@{user.username}" if user.username else "لا يوجد"
-    info_text = f"📬 طلب جديد\n" \
+    info_text = f"📬 طلب تصميم جديد\n" \
                 f"👤 المرسل: {user.full_name}\n" \
                 f"🔗 اليوزر: {username_str}\n" \
                 f"نوع المرفق: {content_type}\n"
 
-    # إضافة حالة التحويل لرسالة المشرف
     if is_auto_forwarded:
         info_text += "✅ حالة التحويل: (تم النشر في القناة تلقائياً)\n--- الطلب بالأسفل ---"
     else:
         info_text += "⚠️ حالة التحويل: (يحتاج تحويل يدوي للقناة)\n--- الطلب بالأسفل ---"
 
-    # إرسال الإشعار للمشرفين
     for admin_id in admins:
         try:
             await context.bot.send_message(chat_id=admin_id, text=info_text)
             
-            # إذا لم يتم التحويل تلقائياً، نضيف زر التحويل اليدوي، وإلا نرسل الرسالة بدون زر
             reply_markup = None
             if not is_auto_forwarded:
                 keyboard = [[InlineKeyboardButton("📢 تحويل فوري للقناة", callback_data=f"forward_{update.message.message_id}")]]
@@ -256,6 +259,7 @@ def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))  # إضافة أمر المساعدة هنا
     application.add_handler(CommandHandler("admin", admin_panel))
     application.add_handler(CommandHandler("add_admin", add_admin))
     application.add_handler(CommandHandler("rem_admin", rem_admin))
