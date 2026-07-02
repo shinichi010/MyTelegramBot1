@@ -19,7 +19,7 @@ OWNER_USERNAME = "snh_1"
 FIXED_ADMIN_USERNAME = "x_mzer"
 
 # آيدي القناة
-TARGET_CHANNEL_ID = -1002237077978  
+TARGET_CHANNEL_ID = -1004451735544  
 
 maintenance_mode = False
 admins = set()       
@@ -200,7 +200,7 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
         content_type = "فيديو 🎥"
 
     username_str = f"@{user.username}" if user.username else "لا يوجد"
-    info_text = f"📬 **طلب تصميم جديد**\n" \
+    info_text = f"📬 طلب تصميم جديد\n" \
                 f"👤 المرسل: {user.full_name}\n" \
                 f"🔗 اليوزر: {username_str}\n" \
                 f"نوع المرفق: {content_type}\n" \
