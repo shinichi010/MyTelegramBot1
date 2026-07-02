@@ -75,9 +75,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "في حال واجهت أي مشكلة أثناء إرسال الملفات أو كان لديك استفسار، "
-        "يرجى التواصل مع الفريق :\n\n"
+        "يرجى التواصل مع المطور :\n\n"
         f"👨‍💻 : @{OWNER_USERNAME}\n"
-        f"👨‍💼 : @{FIXED_ADMIN_USERNAME}"
     )
     await update.message.reply_text(help_text)
 
