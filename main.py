@@ -11,7 +11,7 @@ from telegram.ext import (
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# --- المتغيرات البيئية من Railway ---
+# --- المتغيرات البيئية ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 
@@ -20,7 +20,7 @@ OWNER_USERNAME = "snh_1"
 FIXED_ADMIN_USERNAME = "x_mzer"
 
 # الآيدي الحقيقي لقناتك الخاصة
-TARGET_CHANNEL_ID = -1002237077978  
+TARGET_CHANNEL_ID = -1004451735544  
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 client = AsyncIOMotorClient(MONGO_URI)
 db = client.graduation_bot
 
-# --- دوال قاعدة البيانات الأساسية ---
 async def get_config():
     conf = await db.config.find_one({"_id": "main_config"})
     default_start = "اهلا بك ارسل ملفك وراح يوصل للمشرفين.\n(للمساعدة ارسل /help)"
@@ -45,7 +44,6 @@ async def get_config():
         }
         await db.config.insert_one(conf)
         
-    # تحديث الحقول إذا كانت غير موجودة قديماً
     if "start_msg" not in conf: conf["start_msg"] = default_start
     if "success_msg" not in conf: conf["success_msg"] = default_success
         
@@ -57,7 +55,6 @@ async def update_config(key, value):
 async def inc_received():
     await db.config.update_one({"_id": "main_config"}, {"$inc": {"total_received": 1}}, upsert=True)
 
-# تسجيل المشرفين
 async def register_admin_if_needed(user):
     if user and user.username in [OWNER_USERNAME, FIXED_ADMIN_USERNAME]:
         await db.admins.update_one({"user_id": user.id}, {"$set": {"user_id": user.id}}, upsert=True)
@@ -68,7 +65,6 @@ async def is_admin(user):
     doc = await db.admins.find_one({"user_id": user.id})
     return bool(doc)
 
-# حفظ المستخدمين (لغرض الإحصائيات والإذاعة)
 async def save_user(user_id):
     await db.users.update_one({"user_id": user_id}, {"$set": {"user_id": user_id}}, upsert=True)
 
@@ -97,7 +93,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("عذراً، تم إيقاف استقبال الملفات والرسائل حالياً.")
         return
 
-    # استخدام رسالة الترحيب من قاعدة البيانات
     await update.message.reply_text(conf["start_msg"])
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -229,7 +224,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.username != OWNER_USERNAME: return
     if not context.args:
-        await update.message.reply_text("يرجى كتابة الآيدي بعد الأمر. مثال:\n`/add_admin 12345678`", parse_mode="Markdown")
+        await update.message.reply_text("يرجى كتابة الآيدي بعد الأمر.")
         return
     try:
         admin_id = int(context.args[0])
@@ -258,12 +253,11 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
     if await is_banned(user.id): return
     await save_user(user.id)
 
-    # معالجة أوامر الإدارة النشطة (تغيير رسائل / إذاعة)
+    # معالجة أوامر الإدارة النشطة (تغيير رسائل / إذاعة / رد)
     if await is_admin(user):
         state = context.user_data.get('admin_state')
         
         if state:
-            # إلغاء العملية
             if update.message.text == "إلغاء":
                 context.user_data['admin_state'] = None
                 await update.message.reply_text("✅ تم إلغاء العملية.")
@@ -278,7 +272,7 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
                         await context.bot.copy_message(chat_id=u['user_id'], from_chat_id=chat_id, message_id=update.message.message_id)
                         count += 1
                     except:
-                        pass # المستخدم ربما حظر البوت
+                        pass 
                 context.user_data['admin_state'] = None
                 await update.message.reply_text(f"✅ تمت الإذاعة بنجاح لـ {count} مستخدم.")
                 return
@@ -301,7 +295,7 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
                 context.user_data['admin_state'] = None
                 return
 
-        # الرد المباشر على المستخدمين من قبل المشرف
+        # الرد المباشر
         if update.message.reply_to_message:
             doc = await db.messages.find_one({"_id": update.message.reply_to_message.message_id})
             if doc:
@@ -316,11 +310,11 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
                 except Exception as e:
                     await update.message.reply_text(f"❌ فشل إرسال الرد للمستخدم: {e}")
             return
-        return
 
     # --- معالجة رسائل الطلاب العادية ---
     conf = await get_config()
-    if conf.get("maintenance_mode", False):
+    
+    if conf.get("maintenance_mode", False) and not await is_admin(user):
         await update.message.reply_text("⚠️ نعتذر، استلام الملفات متوقف حالياً من قبل الإدارة.")
         return
 
@@ -328,17 +322,20 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
 
     content_type = "نص 📝"
     is_auto_forwarded = False
+    
+    has_media = bool(update.message.document or update.message.photo or update.message.video or 
+                     update.message.audio or update.message.voice or update.message.animation)
 
-    if update.message.document:
-        content_type = "ملف 📄"
-    elif update.message.photo:
-        content_type = "صورة 🖼"
-    elif update.message.video:
-        content_type = "فيديو 🎥"
+    if update.message.document: content_type = "ملف 📄"
+    elif update.message.photo: content_type = "صورة 🖼"
+    elif update.message.video: content_type = "فيديو 🎥"
+    elif update.message.audio or update.message.voice: content_type = "صوت 🎵"
+    elif update.message.animation: content_type = "متحركة 🎇"
 
-    # التحويل التلقائي للقناة
-    if update.message.document or update.message.photo:
+    # التحويل التلقائي للقناة لجميع الوسائط
+    if has_media:
         try:
+            # الخطة أ: محاولة دمج اسم الطالب وية الملف
             await context.bot.copy_message(
                 chat_id=TARGET_CHANNEL_ID,
                 from_chat_id=chat_id,
@@ -347,7 +344,22 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
             )
             is_auto_forwarded = True
         except Exception as e:
-            logger.error(f"فشل التحويل التلقائي للقناة: {e}")
+            logger.error(f"فشل التحويل مع النص: {e}")
+            try:
+                # الخطة ب (فكرتك): إرسال الملف صافي بدون اسم
+                await context.bot.copy_message(
+                    chat_id=TARGET_CHANNEL_ID,
+                    from_chat_id=chat_id,
+                    message_id=update.message.message_id
+                )
+                # ثم إرسال رسالة منفصلة جواها مباشرة باسم الطالب
+                await context.bot.send_message(
+                    chat_id=TARGET_CHANNEL_ID,
+                    text=f"☝️ الملف أعلاه\n👤 المرسل: {user.full_name}"
+                )
+                is_auto_forwarded = True
+            except Exception as e2:
+                logger.error(f"فشل التحويل التلقائي تماماً: {e2}")
 
     username_str = f"@{user.username}" if user.username else "لا يوجد"
     info_text = f"📬 **طلب تصميم جديد**\n" \
@@ -383,7 +395,6 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
         except Exception as e:
             logger.error(f"فشل إرسال للمشرف: {e}")
 
-    # استخدام رسالة الاستلام من قاعدة البيانات
     await update.message.reply_text(conf["success_msg"])
 
 def main():
