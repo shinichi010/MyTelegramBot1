@@ -11,16 +11,16 @@ from telegram.ext import (
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# --- المتغيرات البيئية ---
+# --- المتغيرات البيئية من Railway ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 
-# يوزرات الإدارة
+# يوزرات الإدارة الثابتة
 OWNER_USERNAME = "snh_1" 
 FIXED_ADMIN_USERNAME = "x_mzer"
 
-# 🔴 الآيدي مال قناتك الخاصة
-TARGET_CHANNEL_ID = -1004451735544  
+# الآيدي الحقيقي لقناتك الخاصة
+TARGET_CHANNEL_ID = -1002237077978  
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,12 +29,26 @@ logger = logging.getLogger(__name__)
 client = AsyncIOMotorClient(MONGO_URI)
 db = client.graduation_bot
 
-# دوال مساعدة لقاعدة البيانات
+# --- دوال قاعدة البيانات الأساسية ---
 async def get_config():
     conf = await db.config.find_one({"_id": "main_config"})
+    default_start = "اهلا بك ارسل ملفك وراح يوصل للمشرفين.\n(للمساعدة ارسل /help)"
+    default_success = "تم الاستلام بنجاح"
+    
     if not conf:
-        conf = {"_id": "main_config", "maintenance_mode": False, "total_received": 0}
+        conf = {
+            "_id": "main_config", 
+            "maintenance_mode": False, 
+            "total_received": 0,
+            "start_msg": default_start,
+            "success_msg": default_success
+        }
         await db.config.insert_one(conf)
+        
+    # تحديث الحقول إذا كانت غير موجودة قديماً
+    if "start_msg" not in conf: conf["start_msg"] = default_start
+    if "success_msg" not in conf: conf["success_msg"] = default_success
+        
     return conf
 
 async def update_config(key, value):
@@ -43,7 +57,7 @@ async def update_config(key, value):
 async def inc_received():
     await db.config.update_one({"_id": "main_config"}, {"$inc": {"total_received": 1}}, upsert=True)
 
-# تسجيل المشرفين الأساسيين تلقائياً في قاعدة البيانات ليتمكنوا من استلام الرسائل
+# تسجيل المشرفين
 async def register_admin_if_needed(user):
     if user and user.username in [OWNER_USERNAME, FIXED_ADMIN_USERNAME]:
         await db.admins.update_one({"user_id": user.id}, {"$set": {"user_id": user.id}}, upsert=True)
@@ -54,6 +68,10 @@ async def is_admin(user):
     doc = await db.admins.find_one({"user_id": user.id})
     return bool(doc)
 
+# حفظ المستخدمين (لغرض الإحصائيات والإذاعة)
+async def save_user(user_id):
+    await db.users.update_one({"user_id": user_id}, {"$set": {"user_id": user_id}}, upsert=True)
+
 async def is_banned(user_id):
     doc = await db.banned.find_one({"user_id": user_id})
     return bool(doc)
@@ -61,11 +79,9 @@ async def is_banned(user_id):
 # --- الأوامر الأساسية ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    
-    # تحقق من الحظر
-    if await is_banned(user.id):
-        return
+    if await is_banned(user.id): return
 
+    await save_user(user.id)
     await register_admin_if_needed(user)
     
     if user.username == OWNER_USERNAME:
@@ -81,11 +97,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("عذراً، تم إيقاف استقبال الملفات والرسائل حالياً.")
         return
 
-    await update.message.reply_text("اهلا بك ارسل ملفك وراح يوصل للمشرفين.\n(للمساعدة ارسل /help)")
+    # استخدام رسالة الترحيب من قاعدة البيانات
+    await update.message.reply_text(conf["start_msg"])
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if await is_banned(user.id): return
+    await save_user(user.id)
 
     help_text = (
         "في حال واجهت أي مشكلة أثناء إرسال ملف التصميم أو كان لديك استفسار، "
@@ -95,7 +113,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(help_text)
 
-# --- نظام الحظر (للمالك فقط) ---
+# --- نظام الحظر ---
 async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.username != OWNER_USERNAME: return
     if not context.args:
@@ -104,7 +122,7 @@ async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_id = int(context.args[0])
         await db.banned.update_one({"user_id": target_id}, {"$set": {"user_id": target_id}}, upsert=True)
-        await update.message.reply_text(f"🚫 تم حظر المستخدم ذو الآيدي {target_id} بنجاح ولن يتمكن من استخدام البوت.")
+        await update.message.reply_text(f"🚫 تم حظر المستخدم {target_id} بنجاح.")
     except ValueError:
         await update.message.reply_text("❌ الآيدي غير صحيح.")
 
@@ -116,7 +134,7 @@ async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_id = int(context.args[0])
         await db.banned.delete_one({"user_id": target_id})
-        await update.message.reply_text(f"✅ تم رفع الحظر عن المستخدم ذو الآيدي {target_id} بنجاح.")
+        await update.message.reply_text(f"✅ تم رفع الحظر عن المستخدم {target_id} بنجاح.")
     except ValueError:
         await update.message.reply_text("❌ الآيدي غير صحيح.")
 
@@ -128,36 +146,21 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     conf = await get_config()
-    status_text = "🔴 متوقف (لا يستقبل ملفات)" if conf.get("maintenance_mode") else "🟢 يعمل ويستقبل الملفات"
-    total_received = conf.get("total_received", 0)
+    status_text = "🔴 متوقف (صيانة)" if conf.get("maintenance_mode") else "🟢 يعمل ويستقبل الملفات"
     
-    # حساب حجم قاعدة البيانات
-    stats = await db.command("dbstats")
-    data_size_kb = stats.get("dataSize", 0) / 1024
-    size_str = f"{data_size_kb / 1024:.2f} MB" if data_size_kb > 1024 else f"{data_size_kb:.2f} KB"
-    
-    admins_count = await db.admins.count_documents({})
-    banned_count = await db.banned.count_documents({})
-
-    text = (
-        f"📊 **لوحة تحكم الإدارة**\n\n"
-        f"🔹 حالة البوت: {status_text}\n"
-        f"🔹 إجمالي الطلبات المستلمة: {total_received} طلب 📈\n"
-        f"🔹 عدد المشرفين الإضافيين: {admins_count}\n"
-        f"🔹 عدد المحظورين: {banned_count}\n"
-        f"💾 حجم قاعدة البيانات المستهلك: {size_str} من أصل 512 MB\n\n"
-        "استخدم الأزرار أدناه للتحكم:"
-    )
+    text = f"⚙️ **لوحة تحكم الإدارة**\n\nحالة البوت: {status_text}\nاختر الإجراء المطلوب من الأزرار أدناه:"
     
     keyboard = [
-        [
-            InlineKeyboardButton("⏸ إيقاف الاستقبال", callback_data="m_on"),
-            InlineKeyboardButton("▶️ تشغيل الاستقبال", callback_data="m_off")
-        ]
+        [InlineKeyboardButton("📊 الإحصائيات الشاملة", callback_data="show_stats")],
+        [InlineKeyboardButton("📢 إرسال إذاعة (للجميع)", callback_data="broadcast")],
+        [InlineKeyboardButton("📝 تغيير رسالة الترحيب", callback_data="edit_start"),
+         InlineKeyboardButton("📝 تغيير رسالة الاستلام", callback_data="edit_success")],
+        [InlineKeyboardButton("⏸ إيقاف الاستقبال", callback_data="m_on"),
+         InlineKeyboardButton("▶️ تشغيل الاستقبال", callback_data="m_off")]
     ]
     
-    if update.effective_user.username == OWNER_USERNAME:
-        text += "\n\n👑 *صلاحيات المطور:*\n- لإضافة مشرف: `/add_admin ID`\n- لحذف مشرف: `/rem_admin ID`\n- لحظر طالب مزعج: `/ban ID`\n- لفك الحظر: `/unban ID`"
+    if user.username == OWNER_USERNAME:
+        text += "\n\n👑 *أوامر سريعة للمطور:*\n`/add_admin ID` | `/rem_admin ID`\n`/ban ID` | `/unban ID`"
         
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
@@ -174,11 +177,43 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "m_on":
         await update_config("maintenance_mode", True)
-        await query.edit_message_text("⚙️ تم إيقاف استقبال الملفات. البوت الآن لا يستقبل أي شيء من الطلاب.")
+        await query.edit_message_text("⚙️ تم إيقاف استقبال الملفات بنجاح.")
     elif data == "m_off":
         await update_config("maintenance_mode", False)
-        await query.edit_message_text("🟢 تم تشغيل الاستقبال. البوت يعمل الآن بشكل طبيعي ويستقبل الملفات.")
+        await query.edit_message_text("🟢 تم تشغيل استقبال الملفات بنجاح.")
     
+    elif data == "show_stats":
+        conf = await get_config()
+        stats = await db.command("dbstats")
+        data_size_kb = stats.get("dataSize", 0) / 1024
+        size_str = f"{data_size_kb / 1024:.2f} MB" if data_size_kb > 1024 else f"{data_size_kb:.2f} KB"
+        
+        users_count = await db.users.count_documents({})
+        admins_count = await db.admins.count_documents({})
+        banned_count = await db.banned.count_documents({})
+        
+        stat_text = (
+            f"📊 **الإحصائيات الشاملة:**\n\n"
+            f"👥 إجمالي المستخدمين: {users_count}\n"
+            f"📥 إجمالي الملفات/الطلبات المستلمة: {conf.get('total_received', 0)}\n"
+            f"🛡 عدد المشرفين الإضافيين: {admins_count}\n"
+            f"🚫 عدد المحظورين: {banned_count}\n"
+            f"💾 استهلاك السحابة: {size_str} من 512 MB\n"
+        )
+        await query.message.reply_text(stat_text, parse_mode="Markdown")
+
+    elif data == "broadcast":
+        context.user_data['admin_state'] = 'broadcast'
+        await query.message.reply_text("📢 **وضع الإذاعة:**\nأرسل الآن الرسالة (نص، صورة، أو ملف) التي تريد إرسالها لجميع الطلاب.\n\n*(لإلغاء العملية أرسل كلمة: إلغاء)*", parse_mode="Markdown")
+
+    elif data == "edit_start":
+        context.user_data['admin_state'] = 'edit_start'
+        await query.message.reply_text("📝 **تغيير رسالة الترحيب (Start):**\nأرسل الآن النص الجديد.\n\n*(لإلغاء العملية أرسل كلمة: إلغاء)*", parse_mode="Markdown")
+
+    elif data == "edit_success":
+        context.user_data['admin_state'] = 'edit_success'
+        await query.message.reply_text("📝 **تغيير رسالة الاستلام:**\nأرسل الآن النص الجديد.\n\n*(لإلغاء العملية أرسل كلمة: إلغاء)*", parse_mode="Markdown")
+
     elif data.startswith("forward_"):
         try:
             await context.bot.copy_message(
@@ -199,33 +234,75 @@ async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         admin_id = int(context.args[0])
         await db.admins.update_one({"user_id": admin_id}, {"$set": {"user_id": admin_id}}, upsert=True)
-        await update.message.reply_text(f"✅ تم إضافة العضو ذو الآيدي {admin_id} كمشرف بنجاح.")
+        await update.message.reply_text(f"✅ تم إضافة العضو {admin_id} كمشرف بنجاح.")
     except ValueError:
         await update.message.reply_text("❌ يرجى إدخال آيدي رقمي صحيح.")
 
 async def rem_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.username != OWNER_USERNAME: return
     if not context.args:
-        await update.message.reply_text("يرجى كتابة الآيدي بعد الأمر. مثال:\n`/rem_admin 12345678`", parse_mode="Markdown")
+        await update.message.reply_text("يرجى كتابة الآيدي بعد الأمر.")
         return
     try:
         admin_id = int(context.args[0])
         await db.admins.delete_one({"user_id": admin_id})
-        await update.message.reply_text(f"✅ تم إزالة العضو ذو الآيدي {admin_id} من المشرفين.")
+        await update.message.reply_text(f"✅ تم إزالة العضو {admin_id} من المشرفين.")
     except ValueError:
-        await update.message.reply_text("❌ يرجى إدخال آيدي رقمي صحيح.")
+        pass
 
-# --- استقبال ومعالجة الرسائل ---
+# --- معالج الرسائل (إدارة الحالات والاستقبال) ---
 async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_chat.id
 
-    if await is_banned(user.id):
-        return
+    if await is_banned(user.id): return
+    await save_user(user.id)
 
+    # معالجة أوامر الإدارة النشطة (تغيير رسائل / إذاعة)
     if await is_admin(user):
+        state = context.user_data.get('admin_state')
+        
+        if state:
+            # إلغاء العملية
+            if update.message.text == "إلغاء":
+                context.user_data['admin_state'] = None
+                await update.message.reply_text("✅ تم إلغاء العملية.")
+                return
+
+            if state == 'broadcast':
+                users_cursor = db.users.find()
+                count = 0
+                await update.message.reply_text("⏳ جاري الإرسال للجميع، يرجى الانتظار...")
+                async for u in users_cursor:
+                    try:
+                        await context.bot.copy_message(chat_id=u['user_id'], from_chat_id=chat_id, message_id=update.message.message_id)
+                        count += 1
+                    except:
+                        pass # المستخدم ربما حظر البوت
+                context.user_data['admin_state'] = None
+                await update.message.reply_text(f"✅ تمت الإذاعة بنجاح لـ {count} مستخدم.")
+                return
+
+            elif state == 'edit_start':
+                if update.message.text:
+                    await update_config("start_msg", update.message.text)
+                    await update.message.reply_text("✅ تم تغيير رسالة الترحيب بنجاح. ستظهر للطلاب فوراً.")
+                else:
+                    await update.message.reply_text("❌ يرجى إرسال نص فقط.")
+                context.user_data['admin_state'] = None
+                return
+
+            elif state == 'edit_success':
+                if update.message.text:
+                    await update_config("success_msg", update.message.text)
+                    await update.message.reply_text("✅ تم تغيير رسالة الاستلام بنجاح. ستظهر للطلاب فوراً.")
+                else:
+                    await update.message.reply_text("❌ يرجى إرسال نص فقط.")
+                context.user_data['admin_state'] = None
+                return
+
+        # الرد المباشر على المستخدمين من قبل المشرف
         if update.message.reply_to_message:
-            # استرجاع آيدي المرسل الأصلي من قاعدة البيانات
             doc = await db.messages.find_one({"_id": update.message.reply_to_message.message_id})
             if doc:
                 target_user_id = doc["user_id"]
@@ -241,6 +318,7 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
             return
         return
 
+    # --- معالجة رسائل الطلاب العادية ---
     conf = await get_config()
     if conf.get("maintenance_mode", False):
         await update.message.reply_text("⚠️ نعتذر، استلام الملفات متوقف حالياً من قبل الإدارة.")
@@ -283,7 +361,6 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
     else:
         info_text += "⚠️ حالة التحويل: (يحتاج تحويل يدوي للقناة)\n--- الطلب بالأسفل ---"
 
-    # جلب جميع المشرفين من قاعدة البيانات
     all_admins = [doc["user_id"] async for doc in db.admins.find()]
     
     for admin_id in all_admins:
@@ -302,17 +379,16 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
                 reply_markup=reply_markup
             )
             
-            # حفظ رسالة البوت لربطها بالطالب من أجل ميزة الرد المباشر
             await db.messages.insert_one({"_id": sent_msg.message_id, "user_id": user.id})
-
         except Exception as e:
-            logger.error(f"فشل إرسال الرسالة للمشرف {admin_id}: {e}")
+            logger.error(f"فشل إرسال للمشرف: {e}")
 
-    await update.message.reply_text("تم الاستلام بنجاح")
+    # استخدام رسالة الاستلام من قاعدة البيانات
+    await update.message.reply_text(conf["success_msg"])
 
 def main():
     if not BOT_TOKEN or not MONGO_URI:
-        print("❌ خطأ: تأكد من إضافة BOT_TOKEN و MONGO_URI في متغيرات البيئة.")
+        print("❌ خطأ: تأكد من إضافة المتغيرات.")
         return
 
     application = Application.builder().token(BOT_TOKEN).build()
@@ -327,7 +403,7 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_incoming_messages))
 
-    print("🤖 البوت يعمل الآن بقاعدة بيانات سحابية ويراقب الطلبات...")
+    print("🤖 البوت يعمل ويراقب الطلبات...")
     application.run_polling()
 
 if __name__ == "__main__":
