@@ -295,9 +295,10 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
                 context.user_data['admin_state'] = None
                 return
 
-        # الرد المباشر
+        # الرد المباشر (تم تحديث طريقة جلب الآيدي لضمان عدم التداخل)
         if update.message.reply_to_message:
-            doc = await db.messages.find_one({"_id": update.message.reply_to_message.message_id})
+            msg_id = update.message.reply_to_message.message_id
+            doc = await db.messages.find_one({"_id": f"{chat_id}_{msg_id}"})
             if doc:
                 target_user_id = doc["user_id"]
                 try:
@@ -332,10 +333,9 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
     elif update.message.audio or update.message.voice: content_type = "صوت 🎵"
     elif update.message.animation: content_type = "متحركة 🎇"
 
-    # التحويل التلقائي للقناة لجميع الوسائط
+    # التحويل التلقائي للقناة
     if has_media:
         try:
-            # الخطة أ: محاولة دمج اسم الطالب وية الملف
             await context.bot.copy_message(
                 chat_id=TARGET_CHANNEL_ID,
                 from_chat_id=chat_id,
@@ -346,13 +346,11 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
         except Exception as e:
             logger.error(f"فشل التحويل مع النص: {e}")
             try:
-                # الخطة ب (فكرتك): إرسال الملف صافي بدون اسم
                 await context.bot.copy_message(
                     chat_id=TARGET_CHANNEL_ID,
                     from_chat_id=chat_id,
                     message_id=update.message.message_id
                 )
-                # ثم إرسال رسالة منفصلة جواها مباشرة باسم الطالب
                 await context.bot.send_message(
                     chat_id=TARGET_CHANNEL_ID,
                     text=f"☝️ الملف أعلاه\n👤 المرسل: {user.full_name}"
@@ -361,10 +359,14 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
             except Exception as e2:
                 logger.error(f"فشل التحويل التلقائي تماماً: {e2}")
 
+    # استخدام HTML بدلاً من Markdown لمنع الأخطاء البرمجية بسبب رموز اليوزرات
+    import html
+    safe_name = html.escape(user.full_name)
     username_str = f"@{user.username}" if user.username else "لا يوجد"
-    info_text = f"📬 **طلب تصميم جديد**\n" \
-                f"👤 المرسل: {user.full_name}\n" \
-                f"🆔 الآيدي: `{user.id}`\n" \
+    
+    info_text = f"📬 <b>طلب تصميم جديد</b>\n" \
+                f"👤 المرسل: {safe_name}\n" \
+                f"🆔 الآيدي: <code>{user.id}</code>\n" \
                 f"🔗 اليوزر: {username_str}\n" \
                 f"نوع المرفق: {content_type}\n"
 
@@ -377,7 +379,8 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
     
     for admin_id in all_admins:
         try:
-            await context.bot.send_message(chat_id=admin_id, text=info_text, parse_mode="Markdown")
+            # إرسال النص بصيغة HTML القوية
+            await context.bot.send_message(chat_id=admin_id, text=info_text, parse_mode="HTML")
             
             reply_markup = None
             if not is_auto_forwarded:
@@ -391,9 +394,14 @@ async def handle_incoming_messages(update: Update, context: ContextTypes.DEFAULT
                 reply_markup=reply_markup
             )
             
-            await db.messages.insert_one({"_id": sent_msg.message_id, "user_id": user.id})
+            # حفظ رقم الرسالة بشكل فريد تماماً لمنع أي تداخل بين المشرفين
+            await db.messages.update_one(
+                {"_id": f"{admin_id}_{sent_msg.message_id}"},
+                {"$set": {"user_id": user.id}},
+                upsert=True
+            )
         except Exception as e:
-            logger.error(f"فشل إرسال للمشرف: {e}")
+            logger.error(f"فشل إرسال للمشرف {admin_id}: {e}")
 
     await update.message.reply_text(conf["success_msg"])
 
