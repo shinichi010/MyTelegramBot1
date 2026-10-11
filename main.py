@@ -49,7 +49,8 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)  # حتى ما يطبع التوكن بالـ Logs
+
 # ============================================================
 # قاعدة البيانات
 # ============================================================
@@ -1067,6 +1068,16 @@ async def post_init(application):
     application.bot_data["ping_task"] = asyncio.create_task(ping_loop())
 
 
+async def post_shutdown(application):
+    task = application.bot_data.get("ping_task")
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 # ============================================================
 # التشغيل
 # ============================================================
@@ -1076,7 +1087,7 @@ def main():
         return
 
     start_health_server()
-    application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    application = Application.builder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
 
     private = filters.ChatType.PRIVATE
     application.add_handler(CommandHandler("start", start, filters=private))
@@ -1089,7 +1100,7 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(private & ~filters.COMMAND, handle_message))
 
-    print("🤖 البوت يعمل...")
+    print("🤖 البوت يعمل...", flush=True)
     application.run_polling()
 
 
