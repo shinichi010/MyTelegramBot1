@@ -362,6 +362,47 @@ async def send_post(bot, uid, name, file_id, ftype):
     return await send_file(bot, CHANNEL_ID, file_id, ftype, f"👤 {html.escape(name)}", None)
 
 
+def info_text(full_name, username, uid):
+    uname = f"@{html.escape(username)}" if username else "لا يوجد"
+    return (
+        f"👤 اسم الحساب: {html.escape(full_name or '-')}\n"
+        f"🔗 اليوزر: {uname}\n"
+        f"🆔 الآيدي: <code>{uid}</code>"
+    )
+
+
+async def send_info(bot, uid, full_name, username, reply_to):
+    """يرسل رسالة معلومات الحساب كرد على منشور الطالب بالقناة. يرجع رقمها أو None."""
+    try:
+        m = await bot.send_message(
+            CHANNEL_ID,
+            info_text(full_name, username, uid),
+            parse_mode="HTML",
+            reply_to_message_id=reply_to,
+            allow_sending_without_reply=True,
+        )
+        return m.message_id
+    except Exception as e:
+        logger.warning(f"send_info failed: {e}")
+        return None
+
+
+async def delete_post_msgs(bot, d):
+    """يحذف منشور الطالب ورسالة معلوماته من القناة. يرجع True إذا انحذف المنشور الأساسي."""
+    ok = True
+    try:
+        await bot.delete_message(CHANNEL_ID, d["channel_msg_id"])
+    except Exception as e:
+        ok = False
+        logger.warning(f"delete channel post failed: {e}")
+    if d.get("info_msg_id"):
+        try:
+            await bot.delete_message(CHANNEL_ID, d["info_msg_id"])
+        except Exception as e:
+            logger.warning(f"delete info msg failed: {e}")
+    return ok
+
+
 async def send_request(bot, uid, old_name, new_name, file_id, ftype):
     caption = (
         "🔄 <b>طلب تعديل</b>\n"
@@ -372,9 +413,13 @@ async def send_request(bot, uid, old_name, new_name, file_id, ftype):
 
 
 async def replace_post(bot, uid, student, new_name, file_id, ftype):
-    """يعدل منشور الطالب القديم بالقناة. إذا فشل، ينشر جديد ويحذف القديم. يرجع رقم المنشور."""
+    """يعدل منشور الطالب القديم بالقناة. إذا فشل، ينشر جديد ويحذف القديم.
+    يرجع (رقم المنشور، رقم رسالة المعلومات)."""
     caption = f"👤 {html.escape(new_name)}"
     old_id = (student or {}).get("channel_msg_id")
+    old_info = (student or {}).get("info_msg_id")
+    u = await db.users.find_one({"user_id": uid}) or {}
+    full_name, username = u.get("full_name"), u.get("username")
     if old_id:
         if ftype == "photo":
             media = InputMediaPhoto(file_id, caption=caption, parse_mode="HTML")
@@ -382,10 +427,10 @@ async def replace_post(bot, uid, student, new_name, file_id, ftype):
             media = InputMediaDocument(file_id, caption=caption, parse_mode="HTML")
         try:
             await bot.edit_message_media(chat_id=CHANNEL_ID, message_id=old_id, media=media)
-            return old_id
+            return old_id, await refresh_info(bot, uid, old_id, old_info, full_name, username)
         except Exception as e:
             if "not modified" in str(e).lower():
-                return old_id
+                return old_id, await refresh_info(bot, uid, old_id, old_info, full_name, username)
             logger.warning(f"edit_message_media failed, reposting: {e}")
 
     sent = await send_post(bot, uid, new_name, file_id, ftype)
@@ -394,7 +439,33 @@ async def replace_post(bot, uid, student, new_name, file_id, ftype):
             await bot.delete_message(CHANNEL_ID, old_id)
         except Exception:
             pass
-    return sent.message_id
+    if old_info:
+        try:
+            await bot.delete_message(CHANNEL_ID, old_info)
+        except Exception:
+            pass
+    info_id = await send_info(bot, uid, full_name, username, sent.message_id)
+    return sent.message_id, info_id
+
+
+async def refresh_info(bot, uid, post_id, info_id, full_name, username):
+    """يحدّث رسالة المعلومات (أو ينشئها إذا ما موجودة). يرجع رقمها."""
+    if info_id:
+        try:
+            await bot.edit_message_text(
+                info_text(full_name, username, uid),
+                chat_id=CHANNEL_ID, message_id=info_id, parse_mode="HTML",
+            )
+            return info_id
+        except Exception as e:
+            if "not modified" in str(e).lower():
+                return info_id
+            logger.warning(f"edit info failed, resending: {e}")
+            try:
+                await bot.delete_message(CHANNEL_ID, info_id)
+            except Exception:
+                pass
+    return await send_info(bot, uid, full_name, username, post_id)
 
 
 # ============================================================
@@ -540,11 +611,8 @@ async def delete_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     failed = 0
     for d in docs:
-        try:
-            await context.bot.delete_message(CHANNEL_ID, d["channel_msg_id"])
-        except Exception as e:
+        if not await delete_post_msgs(context.bot, d):
             failed += 1
-            logger.warning(f"delete channel post failed: {e}")
     if pend and pend.get("request_msg_id"):
         try:
             await context.bot.delete_message(CHANNEL_ID, pend["request_msg_id"])
@@ -617,11 +685,8 @@ async def run_delete_before(bot, cutoff):
     docs = [d async for d in db.students.find({"submitted_at": {"$lt": cutoff}})]
     failed = 0
     for d in docs:
-        try:
-            await bot.delete_message(CHANNEL_ID, d["channel_msg_id"])
-        except Exception as e:
+        if not await delete_post_msgs(bot, d):
             failed += 1
-            logger.warning(f"delete channel post failed: {e}")
         await asyncio.sleep(0.05)
 
     uids = list({d["user_id"] for d in docs})
@@ -960,7 +1025,7 @@ async def resolve_edit(query, context, uid, approve):
     if approve:
         student = await db.students.find_one({"user_id": uid})
         try:
-            new_id = await replace_post(
+            new_id, new_info_id = await replace_post(
                 context.bot, uid, student, pend["new_name"], pend["file_id"], pend["ftype"]
             )
         except Exception as e:
@@ -977,6 +1042,7 @@ async def resolve_edit(query, context, uid, approve):
                 "file_id": pend["file_id"],
                 "ftype": pend["ftype"],
                 "channel_msg_id": new_id,
+                "info_msg_id": new_info_id,
             }},
             upsert=True,
         )
@@ -1433,12 +1499,14 @@ async def submit_new(context, user, conf, name, file_id, ftype, admin=False):
         await say(context, user.id, conf["error_msg"])
         return
 
+    info_id = await send_info(context.bot, user.id, user.full_name, user.username, sent.message_id)
     doc = {
         "user_id": user.id,
         "name": name,
         "file_id": file_id,
         "ftype": ftype,
         "channel_msg_id": sent.message_id,
+        "info_msg_id": info_id,
         "submitted_at": datetime.now(timezone.utc),
     }
     if admin:
