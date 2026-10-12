@@ -85,6 +85,7 @@ PERMS = {
     "ping": "🏓 التحكم بالبينك",
     "export": "📤 تصدير القائمة",
     "delete": "🗑 حذف الطلبات",
+    "report": "📋 التقرير اليومي",
 }
 
 # ============================================================
@@ -101,8 +102,8 @@ DEFAULT_MESSAGES = {
     "success_msg": "تم استلام اسمك وصورتك بنجاح ✅",
     "edit_note_msg": "إذا تريد تعدل اسمك أو صورتك اكتب: تعديل",
     "already_msg": "تم استلام طلبك مسبقاً ✅",
-    "edit_ask_name_msg": "اكتب الاسم الثلاثي الجديد ✍️\n(للإلغاء اكتب: إلغاء)",
-    "edit_ask_photo_msg": "هسه ارسل الصورة الجديدة 🖼\n(للإلغاء اكتب: إلغاء)",
+    "edit_ask_name_msg": "اكتب الاسم الثلاثي الجديد ✍️\n(للإلغاء اكتب: الغاء)",
+    "edit_ask_photo_msg": "هسه ارسل الصورة الجديدة 🖼\n(للإلغاء اكتب: الغاء)",
     "edit_sent_msg": "تم إرسال طلب التعديل، راح توصلك رسالة بالنتيجة ⏳",
     "edit_pending_msg": "عندك طلب تعديل قيد المراجعة، انتظر النتيجة ⏳",
     "edit_approved_msg": "تمت الموافقة على طلب التعديل ✅",
@@ -147,6 +148,9 @@ DEFAULT_CONFIG = {
     "ping_enabled": True,
     "ping_interval": 10,  # بالدقائق
     "close_at": None,     # موعد الإغلاق التلقائي (UTC)
+    "report_enabled": False,   # التقرير اليومي للقناة
+    "report_time": "22:00",    # وقت التقرير (توقيت العراق)
+    "report_last_date": None,
     **DEFAULT_MESSAGES,
 }
 
@@ -227,6 +231,13 @@ def with_edit_note(conf, key):
     if conf.get("edit_enabled"):
         text += "\n\n" + conf["edit_note_msg"]
     return text
+
+
+CANCEL_WORDS = {"الغاء", "إلغاء"}  # كلمة الإلغاء (تنقبل بالهمزة وبدونها)
+
+
+def is_cancel(text):
+    return (text or "").strip() in CANCEL_WORDS
 
 
 def valid_name(text):
@@ -559,6 +570,127 @@ async def delete_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
+def parse_dt(text):
+    """يقرأ تاريخ (مع وقت اختياري) بتوقيت العراق."""
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=BAGHDAD)
+        except ValueError:
+            pass
+    return None
+
+
+async def delete_before_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/delete_before التاريخ — يحذف كل المنشورات اللي انرسلت قبل هذا التاريخ (بعد تأكيد)."""
+    if not await has_perm(update.effective_user, "delete"):
+        return
+    text = " ".join(context.args).strip()
+    dt = parse_dt(text) if text else None
+    if not dt:
+        await update.message.reply_text(
+            "مثال: /delete_before 2026-10-20\nأو مع الوقت: /delete_before 2026-10-20 14:30\n(توقيت العراق)"
+        )
+        return
+    if dt > datetime.now(timezone.utc):
+        await update.message.reply_text("❌ التاريخ لازم يكون بالماضي.")
+        return
+
+    cutoff = dt.astimezone(timezone.utc)
+    count = await db.students.count_documents({"submitted_at": {"$lt": cutoff}})
+    if not count:
+        await update.message.reply_text("ما كو منشورات قبل هذا التاريخ.")
+        return
+
+    shown = dt.strftime("%Y-%m-%d %H:%M")
+    await update.message.reply_text(
+        f"⚠️ راح يتم حذف <b>{count}</b> منشور (من القناة ومن القاعدة) انرسلوا قبل <b>{shown}</b> (توقيت العراق).\n"
+        "هذا الإجراء ما يرجع.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[
+            btn("✅ تأكيد الحذف", f"delb_ok_{int(cutoff.timestamp())}"),
+            btn("❌ الغاء", "delb_no"),
+        ]]),
+    )
+
+
+async def run_delete_before(bot, cutoff):
+    docs = [d async for d in db.students.find({"submitted_at": {"$lt": cutoff}})]
+    failed = 0
+    for d in docs:
+        try:
+            await bot.delete_message(CHANNEL_ID, d["channel_msg_id"])
+        except Exception as e:
+            failed += 1
+            logger.warning(f"delete channel post failed: {e}")
+        await asyncio.sleep(0.05)
+
+    uids = list({d["user_id"] for d in docs})
+    await db.students.delete_many({"_id": {"$in": [d["_id"] for d in docs]}})
+
+    # طلبات التعديل المعلقة لهؤلاء
+    pend = [p async for p in db.pending_edits.find({"user_id": {"$in": uids}})]
+    for p in pend:
+        if p.get("request_msg_id"):
+            try:
+                await bot.delete_message(CHANNEL_ID, p["request_msg_id"])
+            except Exception:
+                pass
+    await db.pending_edits.delete_many({"user_id": {"$in": uids}})
+
+    # نرجع حالتهم للصفر (بدون إشعار لهم)
+    await db.users.update_many(
+        {"user_id": {"$in": uids}},
+        {"$set": {"state": None, "mode": None, "tmp_name": None, "draft": None}},
+    )
+    return len(docs), failed
+
+
+async def build_report_text():
+    conf = await get_config()
+    now_b = datetime.now(BAGHDAD)
+    start_utc = now_b.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+    new_users = await db.users.count_documents({"joined_at": {"$gte": start_utc}})
+    new_subs = await db.students.count_documents(
+        {"submitted_at": {"$gte": start_utc}, "is_admin_post": {"$ne": True}}
+    )
+    total = await db.students.count_documents({"is_admin_post": {"$ne": True}})
+    waiting = len(await pending_user_ids())
+    pend = await db.pending_edits.count_documents({})
+
+    if is_closed(conf):
+        status = "🔴 متوقف"
+    else:
+        status = "🟢 يعمل"
+        cf = fmt_close(conf)
+        if cf:
+            status += f" (يغلق تلقائياً {cf})"
+
+    return (
+        f"📋 <b>تقرير يوم {now_b.strftime('%Y-%m-%d')}</b>\n\n"
+        f"🆕 مستخدمين جدد اليوم: {new_users}\n"
+        f"📥 طلبات جديدة اليوم: {new_subs}\n"
+        f"🎓 إجمالي الطلاب: {total}\n"
+        f"⏰ ضغطوا ستارت وما كملوا: {waiting}\n"
+        f"🔄 طلبات تعديل معلقة: {pend}\n"
+        f"الاستقبال: {status}"
+    )
+
+
+async def send_report(bot):
+    await bot.send_message(CHANNEL_ID, await build_report_text(), parse_mode="HTML")
+
+
+async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await has_perm(update.effective_user, "report"):
+        return
+    try:
+        await send_report(context.bot)
+        await update.message.reply_text("✅ انرسل التقرير للقناة.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ فشل إرسال التقرير: {e}")
+
+
 def _safe_cells(ws):
     """يمنع أي اسم يبدأ بـ = من أن يتحول لمعادلة بالإكسل."""
     for cell in ws[ws.max_row]:
@@ -661,6 +793,11 @@ async def build_panel(user):
             text += "\nالبينك: 🔴 متوقف"
         if not PING_URL:
             text += "\n⚠️ ما كو رابط للبينك (RENDER_EXTERNAL_URL / PING_URL)"
+    if "report" in perms:
+        if conf["report_enabled"]:
+            text += f"\nالتقرير اليومي: 🟢 الساعة {conf['report_time']} (للقناة)"
+        else:
+            text += "\nالتقرير اليومي: 🔴 متوقف"
 
     rows = []
     if "stats" in perms:
@@ -679,6 +816,10 @@ async def build_panel(user):
     if "ping" in perms:
         rows.append([btn("⏸ إيقاف البينك" if conf["ping_enabled"] else "▶️ تشغيل البينك", "tg_ping")])
         rows.append([btn("⏱ تغيير مدة البينك", "ping_int")])
+    if "report" in perms:
+        rows.append([btn("⏸ إيقاف التقرير اليومي" if conf["report_enabled"] else "▶️ تشغيل التقرير اليومي", "tg_report")])
+        rows.append([btn("📋 تقرير الآن (للقناة)", "report_now")])
+        rows.append([btn("⏰ وقت التقرير", "report_time")])
     if owner:
         rows.append([btn("👥 المشرفين وصلاحياتهم", "adm_list")])
 
@@ -688,6 +829,9 @@ async def build_panel(user):
         text += "\n\n🚫 الحظر: <code>/ban ID</code> | <code>/unban ID</code>"
     if "delete" in perms:
         text += "\n🗑 حذف طلب: <code>/delete ID</code>"
+        text += "\n🧹 حذف كل ما قبل تاريخ: <code>/delete_before 2026-10-20</code>"
+    if "report" in perms:
+        text += "\n📋 <code>/report</code>"
     if "export" in perms:
         text += "\n📤 <code>/export</code>"
     if owner:
@@ -981,7 +1125,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await deny()
         context.user_data["admin_state"] = "broadcast"
         await query.message.reply_text(
-            "📢 <b>وضع الإذاعة</b>\nارسل الرسالة (نص/صورة/ملف) اللي تريد توصل للجميع.\n\n(للإلغاء ارسل: إلغاء)",
+            "📢 <b>وضع الإذاعة</b>\nارسل الرسالة (نص/صورة/ملف) اللي تريد توصل للجميع.\n\n(للإلغاء ارسل: الغاء)",
             parse_mode="HTML",
         )
 
@@ -995,7 +1139,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["admin_state"] = "remind"
         await query.message.reply_text(
             f"⏰ <b>تذكير غير المكملين</b>\nعدد المستهدفين: <b>{count}</b>\n"
-            "ارسل رسالة التذكير (نص/صورة) وراح توصل لهم فقط.\n\n(للإلغاء ارسل: إلغاء)",
+            "ارسل رسالة التذكير (نص/صورة) وراح توصل لهم فقط.\n\n(للإلغاء ارسل: الغاء)",
             parse_mode="HTML",
         )
 
@@ -1016,7 +1160,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         hint = "\n(ارسل - إذا تريد البوت يتجاهل الأمر بصمت)" if key == "not_admin_msg" else ""
         await query.message.reply_text(
             f"📝 <b>{MSG_LABELS[key]}</b>\n\nالنص الحالي:\n<pre>{current}</pre>\n"
-            f"ارسل النص الجديد.{hint}\n(للإلغاء ارسل: إلغاء)",
+            f"ارسل النص الجديد.{hint}\n(للإلغاء ارسل: الغاء)",
             parse_mode="HTML",
         )
 
@@ -1052,7 +1196,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             f"⏰ <b>موعد الإغلاق التلقائي</b>\nالحالي: {cf}\n\n"
             "ارسل التاريخ والوقت بتوقيت العراق بهذا الشكل:\n<code>2026-10-20 23:59</code>\n"
-            "أو ارسل <code>-</code> لإلغاء الموعد.\n\n(للإلغاء ارسل: إلغاء)",
+            "أو ارسل <code>-</code> لإلغاء الموعد.\n\n(للإلغاء ارسل: الغاء)",
             parse_mode="HTML",
         )
 
@@ -1069,8 +1213,67 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await deny()
         context.user_data["admin_state"] = "ping_interval"
         await query.message.reply_text(
-            "⏱ ارسل المدة بالدقائق (رقم من 1 إلى 14).\nRender يوقف الخدمة بعد 15 دقيقة بدون زيارة.\n\n(للإلغاء ارسل: إلغاء)"
+            "⏱ ارسل المدة بالدقائق (رقم من 1 إلى 14).\nRender يوقف الخدمة بعد 15 دقيقة بدون زيارة.\n\n(للإلغاء ارسل: الغاء)"
         )
+
+    elif data == "tg_report":
+        if "report" not in perms:
+            return await deny()
+        conf = await get_config()
+        turning_on = not conf["report_enabled"]
+        await set_config("report_enabled", turning_on)
+        if turning_on:
+            # إذا وقت التقرير مرّ اليوم، أول تقرير يكون باجر (مو فوراً)
+            now_b = datetime.now(BAGHDAD)
+            if now_b.strftime("%H:%M") >= conf["report_time"]:
+                await set_config("report_last_date", now_b.strftime("%Y-%m-%d"))
+        text, markup = await build_panel(user)
+        await safe_edit(query, text, markup)
+
+    elif data == "report_now":
+        if "report" not in perms:
+            return await deny()
+        try:
+            await send_report(context.bot)
+            await query.message.reply_text("✅ انرسل التقرير للقناة.")
+        except Exception as e:
+            await query.message.reply_text(f"❌ فشل إرسال التقرير: {e}")
+
+    elif data == "report_time":
+        if "report" not in perms:
+            return await deny()
+        conf = await get_config()
+        context.user_data["admin_state"] = "report_time"
+        await query.message.reply_text(
+            f"⏰ <b>وقت التقرير اليومي</b>\nالحالي: {conf['report_time']} (توقيت العراق)\n\n"
+            "ارسل الوقت الجديد بهذا الشكل: <code>22:00</code>\n\n(للإلغاء ارسل: الغاء)",
+            parse_mode="HTML",
+        )
+
+    elif data == "delb_no":
+        await safe_edit(query, "✅ تم إلغاء الحذف.")
+
+    elif data.startswith("delb_ok_"):
+        if "delete" not in perms:
+            return await deny()
+        try:
+            cutoff = datetime.fromtimestamp(int(data[8:]), timezone.utc)
+        except ValueError:
+            return
+        await safe_edit(query, "⏳ جاري الحذف، انتظر...")
+
+        async def job():
+            try:
+                n, failed = await run_delete_before(context.bot, cutoff)
+                result = f"✅ تم حذف {n} منشور."
+                if failed:
+                    result += f"\n⚠️ فشل حذف {failed} منشور من القناة، احذفهم يدوياً."
+            except Exception as e:
+                logger.error(f"delete_before failed: {e}")
+                result = f"❌ صار خطأ: {html.escape(str(e))}"
+            await safe_edit(query, result)
+
+        context.application.create_task(job())
 
     elif data == "adm_list":
         if not owner:
@@ -1120,7 +1323,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_admin_state(update, context, user, state):
     msg = update.message
 
-    if msg.text and msg.text.strip() == "إلغاء":
+    if is_cancel(msg.text):
         context.user_data["admin_state"] = None
         await msg.reply_text("✅ تم إلغاء العملية.")
         return
@@ -1174,6 +1377,24 @@ async def handle_admin_state(update, context, user, state):
         await set_config("ping_interval", n)
         context.user_data["admin_state"] = None
         await msg.reply_text(f"✅ صار البينك كل {n} دقيقة.")
+
+    elif state == "report_time":
+        if not await has_perm(user, "report"):
+            context.user_data["admin_state"] = None
+            await msg.reply_text("⛔ ما عندك صلاحية.")
+            return
+        try:
+            t = datetime.strptime((msg.text or "").strip(), "%H:%M")
+        except ValueError:
+            await msg.reply_text("❌ الصيغة غلط. مثال: 22:00")
+            return
+        hhmm = t.strftime("%H:%M")
+        await set_config("report_time", hhmm)
+        now_b = datetime.now(BAGHDAD)
+        if now_b.strftime("%H:%M") >= hhmm:
+            await set_config("report_last_date", now_b.strftime("%Y-%m-%d"))
+        context.user_data["admin_state"] = None
+        await msg.reply_text(f"✅ صار التقرير اليومي الساعة {hhmm} (توقيت العراق).")
 
     elif state == "close_at":
         if not await has_perm(user, "toggle"):
@@ -1279,7 +1500,7 @@ async def handle_student(update, context, user, conf):
     text = (msg.text or "").strip()
 
     # إلغاء التعديل
-    if state and mode == "edit" and text == "إلغاء":
+    if state and mode == "edit" and is_cancel(text):
         await set_state(user.id, None)
         await msg.reply_text("تم الإلغاء ✅")
         return
@@ -1366,6 +1587,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await handle_student(update, context, user, conf)
 
 
+async def start_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """كلمة «ستارت» بالعربي تشتغل مثل /start (إلا إذا المشرف وسط إدخال نص للوحة)."""
+    if context.user_data.get("admin_state"):
+        await handle_message(update, context)
+    else:
+        await start(update, context)
+
+
 # ============================================================
 # البينك التلقائي (حتى ما ينام البوت على Render) + سيرفر صحة بسيط
 # ============================================================
@@ -1411,13 +1640,40 @@ async def ping_loop():
             await asyncio.sleep(20)
 
 
+async def report_loop(bot):
+    """يرسل التقرير اليومي للقناة بالوقت المحدد (مرة وحدة باليوم) إذا مفعّل."""
+    while True:
+        try:
+            conf = await get_config()
+            if conf.get("report_enabled"):
+                now_b = datetime.now(BAGHDAD)
+                today = now_b.strftime("%Y-%m-%d")
+                if now_b.strftime("%H:%M") >= conf.get("report_time", "22:00") and conf.get("report_last_date") != today:
+                    await set_config("report_last_date", today)  # قبل الإرسال حتى ما يتكرر إذا فشل
+                    try:
+                        await send_report(bot)
+                    except Exception as e:
+                        logger.error(f"daily report failed: {e}")
+                        owner_id = conf.get("owner_id")
+                        if owner_id:
+                            try:
+                                await bot.send_message(owner_id, f"⚠️ فشل إرسال التقرير اليومي للقناة: {e}")
+                            except Exception:
+                                pass
+        except Exception as e:
+            logger.warning(f"report loop error: {e}")
+        await asyncio.sleep(60)
+
+
 async def post_init(application):
-    application.bot_data["ping_task"] = asyncio.create_task(ping_loop())
+    application.bot_data["tasks"] = [
+        asyncio.create_task(ping_loop()),
+        asyncio.create_task(report_loop(application.bot)),
+    ]
 
 
 async def post_shutdown(application):
-    task = application.bot_data.get("ping_task")
-    if task:
+    for task in application.bot_data.get("tasks", []):
         task.cancel()
         try:
             await task
@@ -1446,7 +1702,10 @@ def main():
     application.add_handler(CommandHandler("unban", unban_user, filters=private))
     application.add_handler(CommandHandler("delete", delete_request, filters=private))
     application.add_handler(CommandHandler("export", export_command, filters=private))
+    application.add_handler(CommandHandler("delete_before", delete_before_cmd, filters=private))
+    application.add_handler(CommandHandler("report", report_command, filters=private))
     application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(private & filters.Regex(r"^\s*ستارت\s*$"), start_word))
     application.add_handler(MessageHandler(private & ~filters.COMMAND, handle_message))
 
     print("🤖 البوت يعمل...", flush=True)
