@@ -811,6 +811,118 @@ async def do_export(bot, chat_id):
     )
 
 
+def _fmt_dt(dt):
+    if not dt:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(BAGHDAD).strftime("%Y-%m-%d %H:%M")
+
+
+async def _send_xlsx(bot, chat_id, wb, prefix, caption):
+    bio = io.BytesIO()
+    wb.save(bio)
+    stamp = datetime.now(BAGHDAD).strftime("%Y-%m-%d_%H%M")
+    await bot.send_document(
+        chat_id, document=bio.getvalue(), filename=f"{prefix}_{stamp}.xlsx", caption=caption
+    )
+
+
+async def do_export_pending(bot, chat_id):
+    """ملف: اللي ضغطوا ستارت وما كملوا (اسم الحساب + اليوزر + الآيدي + تاريخ الدخول)."""
+    if Workbook is None:
+        await bot.send_message(chat_id, "❌ مكتبة openpyxl غير مثبتة. ضيفها بـ requirements.txt.")
+        return
+    ids = set(await pending_user_ids())
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "ما كملوا"
+    ws.sheet_view.rightToLeft = True
+    ws.append(["#", "اسم الحساب", "اليوزر", "الآيدي", "تاريخ الدخول (توقيت العراق)"])
+    i = 0
+    async for u in db.users.find({"user_id": {"$in": list(ids)}}).sort("joined_at", 1):
+        i += 1
+        ws.append([
+            i,
+            u.get("full_name", "") or "",
+            f"@{u['username']}" if u.get("username") else "",
+            u["user_id"],
+            _fmt_dt(u.get("joined_at")),
+        ])
+        _safe_cells(ws)
+    for col, width in zip("ABCDE", (6, 30, 20, 14, 26)):
+        ws.column_dimensions[col].width = width
+    await _send_xlsx(bot, chat_id, wb, "not_completed", f"📤 اللي ما كملوا ({i})")
+
+
+async def do_export_all(bot, chat_id):
+    """ملف: كل الطلاب بدون يوزر وآيدي، مع حالة الإكمال."""
+    if Workbook is None:
+        await bot.send_message(chat_id, "❌ مكتبة openpyxl غير مثبتة. ضيفها بـ requirements.txt.")
+        return
+    students = {}
+    async for st in db.students.find().sort("submitted_at", 1):
+        students[st["user_id"]] = st
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "الكل"
+    ws.sheet_view.rightToLeft = True
+    ws.append(["#", "اسم الحساب", "الاسم المكتوب", "وقت الإرسال (توقيت العراق)", "نوع الملف", "الحالة"])
+
+    rows_done, rows_not = [], []
+    async for u in db.users.find().sort("joined_at", 1):
+        st = students.pop(u["user_id"], None)
+        (rows_done if st else rows_not).append((u, st))
+    # منشورات بدون سجل مستخدم (احتياط)
+    for uid, st in students.items():
+        rows_done.append(({"user_id": uid, "full_name": ""}, st))
+    rows_done.sort(key=lambda r: r[1].get("submitted_at") or datetime.min.replace(tzinfo=timezone.utc))
+
+    i = 0
+    for u, st in rows_done + rows_not:
+        i += 1
+        if st:
+            ws.append([
+                i, u.get("full_name", "") or "", st.get("name", ""),
+                _fmt_dt(st.get("submitted_at")),
+                "صورة" if st.get("ftype") == "photo" else "ملف",
+                "كمل ✅",
+            ])
+        else:
+            ws.append([i, u.get("full_name", "") or "", "", "", "", "ما كمل ❌"])
+        _safe_cells(ws)
+    for col, width in zip("ABCDEF", (6, 30, 32, 26, 12, 12)):
+        ws.column_dimensions[col].width = width
+    await _send_xlsx(bot, chat_id, wb, "all_students", f"📤 كل الطلاب ({i})")
+
+
+async def remove_from_lists(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/remove ID : يحذف الشخص من قوائم البوت فقط. القناة ما تنمس."""
+    if not await has_perm(update.effective_user, "delete"):
+        return
+    if not context.args:
+        await update.message.reply_text("مثال: /remove 123456789")
+        return
+    try:
+        target = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ الآيدي غير صحيح.")
+        return
+    if await db.admins.find_one({"user_id": target}):
+        await update.message.reply_text("❌ ما يصير تحذف مشرف.")
+        return
+    u = await db.users.delete_one({"user_id": target})
+    st = await db.students.delete_one({"user_id": target})
+    await db.pending_edits.delete_many({"user_id": target})
+    if not (u.deleted_count or st.deleted_count):
+        await update.message.reply_text("ℹ️ ما لقيت هذا الآيدي بالقوائم.")
+        return
+    await update.message.reply_text(
+        f"🧹 انحذف {target} من القوائم.\nمنشوره بالقناة بقى مثل ما هو."
+    )
+
+
 async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await has_perm(update.effective_user, "export"):
         return
@@ -868,7 +980,9 @@ async def build_panel(user):
     if "stats" in perms:
         rows.append([btn("📊 الإحصائيات", "stats")])
     if "export" in perms:
-        rows.append([btn("📤 تصدير القائمة (Excel)", "export")])
+        rows.append([btn("📤 تصدير المكملين (Excel)", "export")])
+        rows.append([btn("⏰ تصدير اللي ما كملوا", "export_pending")])
+        rows.append([btn("👥 تصدير الكل", "export_all")])
     if "broadcast" in perms:
         rows.append([btn("📢 إذاعة للجميع", "bc")])
         rows.append([btn("⏰ تذكير اللي ما كملوا", "remind")])
@@ -895,6 +1009,7 @@ async def build_panel(user):
     if "delete" in perms:
         text += "\n🗑 حذف طلب: <code>/delete ID</code>"
         text += "\n🧹 حذف كل ما قبل تاريخ: <code>/delete_before 2026-10-20</code>"
+        text += "\n🗂 حذف شخص من القوائم فقط: <code>/remove ID</code>"
     if "report" in perms:
         text += "\n📋 <code>/report</code>"
     if "export" in perms:
@@ -1185,6 +1300,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "export" not in perms:
             return await deny()
         await do_export(context.bot, query.message.chat_id)
+
+    elif data == "export_pending":
+        if "export" not in perms:
+            return await deny()
+        await do_export_pending(context.bot, query.message.chat_id)
+
+    elif data == "export_all":
+        if "export" not in perms:
+            return await deny()
+        await do_export_all(context.bot, query.message.chat_id)
 
     elif data == "bc":
         if "broadcast" not in perms:
@@ -1770,6 +1895,7 @@ def main():
     application.add_handler(CommandHandler("unban", unban_user, filters=private))
     application.add_handler(CommandHandler("delete", delete_request, filters=private))
     application.add_handler(CommandHandler("export", export_command, filters=private))
+    application.add_handler(CommandHandler("remove", remove_from_lists, filters=private))
     application.add_handler(CommandHandler("delete_before", delete_before_cmd, filters=private))
     application.add_handler(CommandHandler("report", report_command, filters=private))
     application.add_handler(CallbackQueryHandler(button_handler))
