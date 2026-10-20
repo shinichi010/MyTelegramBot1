@@ -86,6 +86,8 @@ PERMS = {
     "export": "📤 تصدير القائمة",
     "delete": "🗑 حذف الطلبات",
     "report": "📋 التقرير اليومي",
+    "reset_lists": "🧹 تصفير القوائم",
+    "reset_stats": "♻️ تصفير الإحصائيات",
 }
 
 # ============================================================
@@ -983,6 +985,10 @@ async def build_panel(user):
         rows.append([btn("📤 تصدير المكملين (Excel)", "export")])
         rows.append([btn("⏰ تصدير اللي ما كملوا", "export_pending")])
         rows.append([btn("👥 تصدير الكل", "export_all")])
+    if "reset_lists" in perms:
+        rows.append([btn("🧹 تصفير القوائم", "reset_lists")])
+    if "reset_stats" in perms:
+        rows.append([btn("♻️ تصفير الإحصائيات", "reset_stats")])
     if "broadcast" in perms:
         rows.append([btn("📢 إذاعة للجميع", "bc")])
         rows.append([btn("⏰ تذكير اللي ما كملوا", "remind")])
@@ -1310,6 +1316,57 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "export" not in perms:
             return await deny()
         await do_export_all(context.bot, query.message.chat_id)
+
+    elif data == "reset_lists":
+        if "reset_lists" not in perms:
+            return await deny()
+        await query.message.reply_text(
+            "⚠️ <b>تصفير القوائم</b>\n\n"
+            "راح تنمسح سجلات كل المستخدمين والطلاب (اللي منها تنطلع ملفات Excel)، "
+            "وطلبات التعديل المعلقة.\n"
+            "• المنشورات بالقناة ما تنمس، بس ما تكدر تحذفها بـ /delete بعدها.\n"
+            "• المشرفين والمحظورين والإعدادات تبقى.\n"
+            "• كل شخص يراسل البوت بعدها ينضاف من جديد.\n\n"
+            "هذا الإجراء ما يرجع. متأكد؟",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                btn("✅ نعم، صفّر", "reset_lists_yes"),
+                btn("❌ إلغاء", "reset_cancel"),
+            ]]),
+        )
+
+    elif data == "reset_lists_yes":
+        if "reset_lists" not in perms:
+            return await deny()
+        u = await db.users.delete_many({})
+        st = await db.students.delete_many({})
+        pe = await db.pending_edits.delete_many({})
+        await safe_edit(
+            query,
+            f"✅ تم تصفير القوائم.\n👥 مستخدمين: {u.deleted_count}\n🎓 طلاب: {st.deleted_count}\n🔄 طلبات تعديل: {pe.deleted_count}",
+            None,
+        )
+
+    elif data == "reset_stats":
+        if "reset_stats" not in perms:
+            return await deny()
+        await query.message.reply_text(
+            "⚠️ <b>تصفير الإحصائيات</b>\nراح يرجع عداد «الطلبات المستلمة» للصفر. متأكد؟",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                btn("✅ نعم، صفّر", "reset_stats_yes"),
+                btn("❌ إلغاء", "reset_cancel"),
+            ]]),
+        )
+
+    elif data == "reset_stats_yes":
+        if "reset_stats" not in perms:
+            return await deny()
+        await set_config("total_received", 0)
+        await safe_edit(query, "✅ تم تصفير الإحصائيات.", None)
+
+    elif data == "reset_cancel":
+        await safe_edit(query, "تم الإلغاء.", None)
 
     elif data == "bc":
         if "broadcast" not in perms:
