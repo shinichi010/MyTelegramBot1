@@ -19,6 +19,7 @@ from telegram import (
 )
 from telegram.error import BadRequest, RetryAfter
 from telegram.ext import (
+    ApplicationHandlerStop,
     Application,
     CommandHandler,
     MessageHandler,
@@ -106,6 +107,7 @@ DEFAULT_MESSAGES = {
     "success_msg": "تم استلام اسمك وصورتك بنجاح ✅",
     "edit_note_msg": "إذا تريد تعدل اسمك أو صورتك اكتب: تعديل",
     "already_msg": "تم استلام طلبك مسبقاً ✅",
+    "edit_choice_msg": "شتريد تعدل؟ 👇",
     "edit_ask_name_msg": "اكتب الاسم الثلاثي الجديد ✍️\n(للإلغاء اكتب: الغاء)",
     "edit_ask_photo_msg": "هسه ارسل الصورة الجديدة 🖼\n(للإلغاء اكتب: الغاء)",
     "edit_sent_msg": "تم إرسال طلب التعديل، راح توصلك رسالة بالنتيجة ⏳",
@@ -131,6 +133,7 @@ MSG_LABELS = {
     "success_msg": "✅ الاستلام",
     "edit_note_msg": "ℹ️ ملاحظة التعديل",
     "already_msg": "🔁 مسجل مسبقاً",
+    "edit_choice_msg": "✏️ تعديل: سؤال النوع",
     "edit_ask_name_msg": "✏️ تعديل: الاسم",
     "edit_ask_photo_msg": "✏️ تعديل: الصورة",
     "edit_sent_msg": "📤 تعديل: أُرسل",
@@ -228,6 +231,11 @@ async def set_state(user_id, state, mode=None, tmp_name=None, draft=None):
         {"$set": {"state": state, "mode": mode, "tmp_name": tmp_name, "draft": draft}},
         upsert=True,
     )
+
+
+def is_edit(mode):
+    """modes: new | edit (اسم+صورة) | edit_name (اسم فقط) | edit_photo (صورة فقط)"""
+    return (mode or "").startswith("edit")
 
 
 def with_edit_note(conf, key):
@@ -407,12 +415,25 @@ async def delete_post_msgs(bot, d):
     return ok
 
 
-async def send_request(bot, uid, old_name, new_name, file_id, ftype):
-    caption = (
-        "🔄 <b>طلب تعديل</b>\n"
-        f"👤 الاسم القديم: {html.escape(old_name)}\n"
-        f"✏️ الاسم الجديد: {html.escape(new_name)}"
-    )
+def request_caption(old_name, new_name, photo_changed, requested_at, status=None, decided_at=None, decided_label="الموافقة"):
+    lines = [
+        "🔄 <b>طلب تعديل</b>",
+        f"👤 الاسم القديم: {html.escape(old_name or '-')}",
+        f"✏️ الاسم الجديد: {html.escape(new_name)}",
+    ]
+    if photo_changed is not None:
+        lines.append("🖼️ الصورة: " + ("تغيرت" if photo_changed else "لم تتغير"))
+    if requested_at:
+        lines.append(f"⏰ وقت الطلب: {_fmt_dt(requested_at)}")
+    if status:
+        lines.append("")
+        lines.append(status)
+        lines.append(f"🕒 وقت {decided_label}: {_fmt_dt(decided_at)}")
+    return "\n".join(lines)
+
+
+async def send_request(bot, uid, old_name, new_name, file_id, ftype, photo_changed=True, requested_at=None):
+    caption = request_caption(old_name, new_name, photo_changed, requested_at)
     return await send_file(bot, CHANNEL_ID, file_id, ftype, caption, request_keyboard(uid))
 
 
@@ -501,9 +522,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == "confirm":
         await msg.reply_text(conf["confirm_hint_msg"])
     elif state == "name":
-        await msg.reply_text(conf["edit_ask_name_msg"] if mode == "edit" else conf["ask_name_msg"])
+        await msg.reply_text(conf["edit_ask_name_msg"] if is_edit(mode) else conf["ask_name_msg"])
     elif state == "photo":
-        await msg.reply_text(conf["edit_ask_photo_msg"] if mode == "edit" else conf["ask_photo_msg"])
+        await msg.reply_text(conf["edit_ask_photo_msg"] if is_edit(mode) else conf["ask_photo_msg"])
     elif student:
         await msg.reply_text(with_edit_note(conf, "already_msg"))
     else:
@@ -964,35 +985,40 @@ async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text[:4000], parse_mode="HTML", disable_web_page_preview=True)
 
 
-async def migrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/migrate CHANNEL_ID : ينقل نسخة من كل المنشورات لقناة ثانية بصمت."""
-    if not await has_perm(update.effective_user, "migrate"):
-        return
-    if not context.args:
-        await update.message.reply_text("مثال: /migrate -1001234567890\n(البوت لازم يكون مشرف بالقناة الجديدة)")
-        return
+def parse_baghdad(text):
+    """يحول 'YYYY-MM-DD HH:MM' (توقيت العراق) إلى datetime بتوقيت UTC. يرجع None إذا غلط."""
     try:
-        target = int(context.args[0])
+        dt = datetime.strptime(text.strip(), "%Y-%m-%d %H:%M")
     except ValueError:
-        await update.message.reply_text("❌ آيدي القناة غير صحيح.")
-        return
-    if target == CHANNEL_ID:
-        await update.message.reply_text("❌ هذي نفس القناة الأساسية.")
-        return
-    try:
-        chat = await context.bot.get_chat(target)
-        me = await context.bot.get_chat_member(target, context.bot.id)
-        if me.status not in ("administrator", "creator"):
-            raise ValueError("البوت مو مشرف بالقناة")
-    except Exception as e:
-        await update.message.reply_text(f"❌ ما كدرت أوصل للقناة: {e}")
-        return
+        return None
+    return dt.replace(tzinfo=BAGHDAD).astimezone(timezone.utc)
 
-    n = await db.students.count_documents({})
-    mins = round(n * 2 * 3.1 / 60)
-    await update.message.reply_text(
+
+async def _migrate_target_ok(bot, target):
+    chat = await bot.get_chat(target)
+    me = await bot.get_chat_member(target, bot.id)
+    if me.status not in ("administrator", "creator"):
+        raise ValueError("البوت مو مشرف بالقناة")
+    return chat
+
+
+async def _migrate_preview(message, bot, target, since):
+    q = {"submitted_at": {"$gte": since}} if since else {}
+    n = await db.students.count_documents(q)
+    if n == 0:
+        await message.reply_text("ما اكو منشورات تنطبق عليها هذي الفترة.")
+        return
+    mins = max(1, round(n * 2 * 3.1 / 60))
+    when = (
+        f"من {since.astimezone(BAGHDAD).strftime('%Y-%m-%d %H:%M')} وبعده"
+        if since else "كل المنشورات"
+    )
+    chat = await _migrate_target_ok(bot, target)
+    suffix = f"_{int(since.timestamp())}" if since else ""
+    await message.reply_text(
         f"🚚 <b>نقل المنشورات</b>\n"
         f"القناة: {html.escape(chat.title or str(target))}\n"
+        f"الفترة: {when}\n"
         f"عدد الطلاب: {n} (مع رسالة معلومات لكل واحد)\n"
         f"الوقت التقريبي: {mins} دقيقة\n\n"
         "• يرسل بصمت، وما يراسل أي طالب أو مشرف.\n"
@@ -1000,10 +1026,77 @@ async def migrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "تبدي؟",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[
-            btn("✅ ابدأ النقل", f"migrate_go_{target}"),
+            btn("✅ ابدأ النقل", f"migrate_go_{target}{suffix}"),
             btn("❌ إلغاء", "reset_cancel"),
         ]]),
     )
+
+
+async def migrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/migrate CHANNEL_ID [YYYY-MM-DD HH:MM] : ينقل نسخة من المنشورات لقناة ثانية بصمت."""
+    if not await has_perm(update.effective_user, "migrate"):
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "مثال: /migrate -1001234567890\n"
+            "أو مع تاريخ: /migrate -1001234567890 2026-10-22 20:00\n"
+            "(البوت لازم يكون مشرف بالقناة الجديدة)"
+        )
+        return
+    try:
+        target = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ آيدي القناة غير صحيح.")
+        return
+    if target == CHANNEL_ID:
+        await update.message.reply_text("❌ هذي نفس القناة الأصلية.")
+        return
+    try:
+        await _migrate_target_ok(context.bot, target)
+    except Exception as e:
+        await update.message.reply_text(f"❌ ما كدرت أوصل للقناة: {e}")
+        return
+
+    if len(context.args) > 1:
+        since = parse_baghdad(" ".join(context.args[1:]))
+        if not since:
+            await update.message.reply_text("❌ صيغة التاريخ غلط. مثال: 2026-10-22 20:00")
+            return
+        await _migrate_preview(update.message, context.bot, target, since)
+        return
+
+    await update.message.reply_text(
+        "شتريد تنقل؟",
+        reply_markup=InlineKeyboardMarkup([
+            [btn("📦 كل المنشورات", f"migrate_all_{target}")],
+            [btn("🕒 من تاريخ ووقت معين", f"migrate_date_{target}")],
+            [btn("❌ إلغاء", "reset_cancel")],
+        ]),
+    )
+
+
+async def migrate_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يلتقط التاريخ اللي يكتبه المشرف بعد ضغط «من تاريخ ووقت معين»."""
+    target = context.user_data.get("migrate_wait")
+    if not target or not update.message or not update.message.text:
+        return
+    if not await has_perm(update.effective_user, "migrate"):
+        context.user_data.pop("migrate_wait", None)
+        return
+    text = update.message.text.strip()
+    if text.startswith("/"):
+        context.user_data.pop("migrate_wait", None)
+        return
+    since = parse_baghdad(text)
+    if not since:
+        await update.message.reply_text("❌ صيغة التاريخ غلط. اكتبه هيج: 2026-10-22 20:00")
+        raise ApplicationHandlerStop
+    context.user_data.pop("migrate_wait", None)
+    try:
+        await _migrate_preview(update.message, context.bot, target, since)
+    except Exception as e:
+        await update.message.reply_text(f"❌ {e}")
+    raise ApplicationHandlerStop
 
 
 async def _tg_retry(coro_fn):
@@ -1016,11 +1109,12 @@ async def _tg_retry(coro_fn):
     return await coro_fn()
 
 
-async def run_migration(bot, target, report_chat):
+async def run_migration(bot, target, report_chat, since=None):
     sent = failed = 0
-    total = await db.students.count_documents({})
+    q = {"submitted_at": {"$gte": since}} if since else {}
+    total = await db.students.count_documents(q)
     try:
-        async for st in db.students.find().sort("submitted_at", 1):
+        async for st in db.students.find(q).sort("submitted_at", 1):
             try:
                 caption = f"👤 {html.escape(st.get('name', ''))}"
                 if st.get("ftype") == "photo":
@@ -1331,11 +1425,14 @@ async def resolve_edit(query, context, uid, approve):
         status = f"❌ رفضها: {who}"
         notify_key = "edit_rejected_msg"
 
-    caption = (
-        "🔄 <b>طلب تعديل</b>\n"
-        f"👤 الاسم القديم: {html.escape(pend.get('old_name', '-'))}\n"
-        f"✏️ الاسم الجديد: {html.escape(pend['new_name'])}\n\n"
-        f"{status}"
+    caption = request_caption(
+        pend.get("old_name", "-"),
+        pend["new_name"],
+        pend.get("photo_changed"),
+        pend.get("requested_at"),
+        status=status,
+        decided_at=datetime.now(timezone.utc),
+        decided_label="الموافقة" if approve else "الرفض",
     )
     try:
         await query.edit_message_caption(
@@ -1402,6 +1499,40 @@ async def send_preview(context, user, conf, name, file_id, ftype, mode):
     await set_state(user.id, "confirm", mode, name, draft)
 
 
+async def student_edit_choice(query, context, data):
+    user = query.from_user
+    if await is_banned(user.id):
+        await query.answer()
+        return
+    conf = await get_config()
+    if is_closed(conf) and not await is_admin(user):
+        await query.answer(conf["maintenance_msg"], show_alert=True)
+        return
+    student = await db.students.find_one({"user_id": user.id})
+    if not conf["edit_enabled"] or not student:
+        await query.answer(conf["edit_disabled_msg"], show_alert=True)
+        return
+    if await db.pending_edits.find_one({"user_id": user.id}):
+        await query.answer(conf["edit_pending_msg"], show_alert=True)
+        return
+
+    await query.answer()
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    if data == "ed_name":
+        await set_state(user.id, "name", "edit_name")
+        await say(context, user.id, conf["edit_ask_name_msg"])
+    elif data == "ed_photo":
+        await set_state(user.id, "photo", "edit_photo", student.get("name"))
+        await say(context, user.id, conf["edit_ask_photo_msg"])
+    else:
+        await set_state(user.id, "name", "edit")
+        await say(context, user.id, conf["edit_ask_name_msg"])
+
+
 async def student_confirm(query, context, data):
     user = query.from_user
     if await is_banned(user.id):
@@ -1431,13 +1562,20 @@ async def student_confirm(query, context, data):
 
     mode = u.get("mode") or "new"
     if data == "cf_ok":
-        if mode == "edit":
-            await submit_edit(context, user, conf, draft["name"], draft["file_id"], draft["ftype"])
+        if is_edit(mode):
+            await submit_edit(
+                context, user, conf, draft["name"], draft["file_id"], draft["ftype"],
+                photo_changed=(mode != "edit_name"),
+            )
         else:
             await submit_new(context, user, conf, draft["name"], draft["file_id"], draft["ftype"])
     else:
-        await set_state(user.id, "name", mode)
-        await say(context, user.id, conf["edit_ask_name_msg"] if mode == "edit" else conf["ask_name_msg"])
+        if mode == "edit_photo":
+            await set_state(user.id, "photo", mode, u.get("tmp_name"))
+            await say(context, user.id, conf["edit_ask_photo_msg"])
+        else:
+            await set_state(user.id, "name", mode)
+            await say(context, user.id, conf["edit_ask_name_msg"] if is_edit(mode) else conf["ask_name_msg"])
 
 
 # ============================================================
@@ -1454,6 +1592,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "rmreq":
         await remove_request_msg(query, context)
+        return
+
+    if data in ("ed_name", "ed_photo", "ed_both"):
+        await student_edit_choice(query, context, data)
         return
 
     if data in ("cf_ok", "cf_no"):
@@ -1544,22 +1686,50 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await set_config("total_received", 0)
         await safe_edit(query, "✅ تم تصفير الإحصائيات.", None)
 
+    elif data.startswith("migrate_all_"):
+        if "migrate" not in perms:
+            return await deny()
+        try:
+            target = int(data.rsplit("_", 1)[1])
+            await safe_edit(query, "📦 كل المنشورات.", None)
+            await _migrate_preview(query.message, context.bot, target, None)
+        except Exception as e:
+            await query.message.reply_text(f"❌ {e}")
+
+    elif data.startswith("migrate_date_"):
+        if "migrate" not in perms:
+            return await deny()
+        try:
+            context.user_data["migrate_wait"] = int(data.rsplit("_", 1)[1])
+        except ValueError:
+            return
+        await safe_edit(
+            query,
+            "🕒 اكتب التاريخ والوقت (توقيت العراق) بهذي الصيغة:\n<code>2026-10-22 20:00</code>\n"
+            "راح أنقل كل منشور انرسل بهذا الوقت وبعده.",
+            None,
+        )
+
     elif data.startswith("migrate_go_"):
         if "migrate" not in perms:
             return await deny()
         if context.bot_data.get("migrating"):
             await query.message.reply_text("⏳ يوجد نقل شغّال حالياً.")
             return
+        parts = data.split("_")  # migrate, go, target, [epoch]
         try:
-            target = int(data.rsplit("_", 1)[1])
-        except ValueError:
+            target = int(parts[2])
+            since = (
+                datetime.fromtimestamp(int(parts[3]), tz=timezone.utc) if len(parts) > 3 else None
+            )
+        except (ValueError, IndexError):
             return
         context.bot_data["migrating"] = True
         await safe_edit(query, "🚚 بدأ النقل... راح أبلغك بالتقدم.", None)
 
         async def _job():
             try:
-                await run_migration(context.bot, target, query.message.chat_id)
+                await run_migration(context.bot, target, query.message.chat_id, since)
             finally:
                 context.bot_data["migrating"] = False
 
@@ -1902,7 +2072,7 @@ async def submit_new(context, user, conf, name, file_id, ftype, admin=False):
     await say(context, user.id, with_edit_note(conf, "success_msg") if not admin else conf["success_msg"])
 
 
-async def submit_edit(context, user, conf, name, file_id, ftype):
+async def submit_edit(context, user, conf, name, file_id, ftype, photo_changed=True):
     if not conf["edit_enabled"]:
         await set_state(user.id, None)
         await say(context, user.id, conf["edit_disabled_msg"])
@@ -1916,7 +2086,10 @@ async def submit_edit(context, user, conf, name, file_id, ftype):
     old_name = student.get("name", "-")
 
     try:
-        req = await send_request(context.bot, user.id, old_name, name, file_id, ftype)
+        requested_at = datetime.now(timezone.utc)
+        req = await send_request(
+            context.bot, user.id, old_name, name, file_id, ftype, photo_changed, requested_at
+        )
     except Exception as e:
         logger.error(f"edit request failed: {e}")
         await notify_owner_error(context, f"⚠️ فشل إرسال طلب تعديل للقناة: {e}")
@@ -1932,6 +2105,8 @@ async def submit_edit(context, user, conf, name, file_id, ftype):
             "new_name": name,
             "file_id": file_id,
             "ftype": ftype,
+            "photo_changed": photo_changed,
+            "requested_at": requested_at,
             "request_msg_id": req.message_id,
         }},
         upsert=True,
@@ -1950,7 +2125,7 @@ async def handle_student(update, context, user, conf):
     text = (msg.text or "").strip()
 
     # إلغاء التعديل
-    if state and mode == "edit" and is_cancel(text):
+    if state and is_edit(mode) and is_cancel(text):
         await set_state(user.id, None)
         await msg.reply_text("تم الإلغاء ✅")
         return
@@ -1963,8 +2138,12 @@ async def handle_student(update, context, user, conf):
         if not msg.text or not valid_name(text):
             await msg.reply_text(conf["bad_name_msg"])
             return
+        if mode == "edit_name" and student:
+            # اسم فقط: نستخدم الصورة القديمة
+            await send_preview(context, user, conf, text, student["file_id"], student["ftype"], mode)
+            return
         await set_state(user.id, "photo", mode, text)
-        await msg.reply_text(conf["edit_ask_photo_msg"] if mode == "edit" else conf["ask_photo_msg"])
+        await msg.reply_text(conf["edit_ask_photo_msg"] if is_edit(mode) else conf["ask_photo_msg"])
         return
 
     if state == "photo":
@@ -1975,7 +2154,7 @@ async def handle_student(update, context, user, conf):
         name = u.get("tmp_name")
         if not name:
             await set_state(user.id, "name", mode)
-            await msg.reply_text(conf["edit_ask_name_msg"] if mode == "edit" else conf["ask_name_msg"])
+            await msg.reply_text(conf["edit_ask_name_msg"] if is_edit(mode) else conf["ask_name_msg"])
             return
         if admin:
             # المشرف ينشر مباشرة بدون معاينة
@@ -2004,8 +2183,14 @@ async def handle_student(update, context, user, conf):
         elif await db.pending_edits.find_one({"user_id": user.id}):
             await msg.reply_text(conf["edit_pending_msg"])
         else:
-            await set_state(user.id, "name", "edit")
-            await msg.reply_text(conf["edit_ask_name_msg"])
+            await msg.reply_text(
+                conf["edit_choice_msg"],
+                reply_markup=InlineKeyboardMarkup([
+                    [btn("✏️ الاسم فقط", "ed_name")],
+                    [btn("🖼️ الصورة فقط", "ed_photo")],
+                    [btn("✏️🖼️ الاسم والصورة", "ed_both")],
+                ]),
+            )
         return
 
     if student:
@@ -2155,6 +2340,7 @@ def main():
     application.add_handler(CommandHandler("remove", remove_from_lists, filters=private))
     application.add_handler(CommandHandler("find", find_command, filters=private))
     application.add_handler(CommandHandler("migrate", migrate_command, filters=private))
+    application.add_handler(MessageHandler(private & filters.TEXT, migrate_date_input), group=-1)
     application.add_handler(CommandHandler("delete_before", delete_before_cmd, filters=private))
     application.add_handler(CommandHandler("report", report_command, filters=private))
     application.add_handler(CallbackQueryHandler(button_handler))
