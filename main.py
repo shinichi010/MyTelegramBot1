@@ -1,4 +1,5 @@
 import io
+import re
 import os
 import html
 import asyncio
@@ -16,7 +17,7 @@ from telegram import (
     InputMediaPhoto,
     InputMediaDocument,
 )
-from telegram.error import BadRequest
+from telegram.error import BadRequest, RetryAfter
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -88,6 +89,7 @@ PERMS = {
     "report": "📋 التقرير اليومي",
     "reset_lists": "🧹 تصفير القوائم",
     "reset_stats": "♻️ تصفير الإحصائيات",
+    "migrate": "🚚 نقل المنشورات",
 }
 
 # ============================================================
@@ -899,6 +901,158 @@ async def do_export_all(bot, chat_id):
     await _send_xlsx(bot, chat_id, wb, "all_students", f"📤 كل الطلاب ({i})")
 
 
+def post_link(msg_id):
+    if not CHANNEL_ID or not msg_id:
+        return None
+    cid = str(abs(CHANNEL_ID))
+    if cid.startswith("100"):
+        cid = cid[3:]
+    return f"https://t.me/c/{cid}/{msg_id}"
+
+
+async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/find كلمة : بحث بالاسم المكتوب أو اسم الحساب أو اليوزر أو الآيدي."""
+    if not await is_admin(update.effective_user):
+        return
+    q = " ".join(context.args).strip().lstrip("@")
+    if not q:
+        await update.message.reply_text("مثال: /find أحمد\nأو: /find @username\nأو: /find 123456789")
+        return
+
+    rx = {"$regex": re.escape(q), "$options": "i"}
+    uids = set()
+    async for u in db.users.find({"$or": [{"full_name": rx}, {"username": rx}]}, {"user_id": 1}):
+        uids.add(u["user_id"])
+    async for st in db.students.find({"name": rx}, {"user_id": 1}):
+        uids.add(st["user_id"])
+    if q.isdigit():
+        uids.add(int(q))
+
+    results = []
+    for uid in uids:
+        u = await db.users.find_one({"user_id": uid})
+        st = await db.students.find_one({"user_id": uid})
+        if not u and not st:
+            continue
+        results.append((uid, u or {}, st))
+
+    if not results:
+        await update.message.reply_text("ما لقيت شي.")
+        return
+
+    total = len(results)
+    results = results[:15]
+    blocks = []
+    for uid, u, st in results:
+        uname = f"@{html.escape(u['username'])}" if u.get("username") else "لا يوجد"
+        lines = [
+            f"👤 {html.escape(u.get('full_name') or '-')}",
+            f"🔗 {uname}  🆔 <code>{uid}</code>",
+        ]
+        if st:
+            link = post_link(st.get("channel_msg_id"))
+            lines.append(f"🎓 الاسم المكتوب: {html.escape(st.get('name', ''))}")
+            if link:
+                lines.append(f'📎 <a href="{link}">فتح المنشور</a>')
+        else:
+            lines.append("⏳ ما كمل")
+        blocks.append("\n".join(lines))
+
+    text = f"🔎 النتائج ({total})\n\n" + "\n\n".join(blocks)
+    if total > 15:
+        text += "\n\n… ضيّق البحث لتشوف الباقي."
+    await update.message.reply_text(text[:4000], parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def migrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/migrate CHANNEL_ID : ينقل نسخة من كل المنشورات لقناة ثانية بصمت."""
+    if not await has_perm(update.effective_user, "migrate"):
+        return
+    if not context.args:
+        await update.message.reply_text("مثال: /migrate -1001234567890\n(البوت لازم يكون مشرف بالقناة الجديدة)")
+        return
+    try:
+        target = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ آيدي القناة غير صحيح.")
+        return
+    if target == CHANNEL_ID:
+        await update.message.reply_text("❌ هذي نفس القناة الأساسية.")
+        return
+    try:
+        chat = await context.bot.get_chat(target)
+        me = await context.bot.get_chat_member(target, context.bot.id)
+        if me.status not in ("administrator", "creator"):
+            raise ValueError("البوت مو مشرف بالقناة")
+    except Exception as e:
+        await update.message.reply_text(f"❌ ما كدرت أوصل للقناة: {e}")
+        return
+
+    n = await db.students.count_documents({})
+    mins = round(n * 2 * 3.1 / 60)
+    await update.message.reply_text(
+        f"🚚 <b>نقل المنشورات</b>\n"
+        f"القناة: {html.escape(chat.title or str(target))}\n"
+        f"عدد الطلاب: {n} (مع رسالة معلومات لكل واحد)\n"
+        f"الوقت التقريبي: {mins} دقيقة\n\n"
+        "• يرسل بصمت، وما يراسل أي طالب أو مشرف.\n"
+        "• القناة الأصلية وقاعدة البيانات ما تنمس.\n\n"
+        "تبدي؟",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[
+            btn("✅ ابدأ النقل", f"migrate_go_{target}"),
+            btn("❌ إلغاء", "reset_cancel"),
+        ]]),
+    )
+
+
+async def _tg_retry(coro_fn):
+    """ينفذ طلب تلكرام ويعيد المحاولة إذا انحدّدت السرعة."""
+    for _ in range(5):
+        try:
+            return await coro_fn()
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+    return await coro_fn()
+
+
+async def run_migration(bot, target, report_chat):
+    sent = failed = 0
+    total = await db.students.count_documents({})
+    try:
+        async for st in db.students.find().sort("submitted_at", 1):
+            try:
+                caption = f"👤 {html.escape(st.get('name', ''))}"
+                if st.get("ftype") == "photo":
+                    m = await _tg_retry(lambda: bot.send_photo(
+                        target, st["file_id"], caption=caption, parse_mode="HTML",
+                        disable_notification=True))
+                else:
+                    m = await _tg_retry(lambda: bot.send_document(
+                        target, st["file_id"], caption=caption, parse_mode="HTML",
+                        disable_notification=True))
+                await asyncio.sleep(3.1)
+                u = await db.users.find_one({"user_id": st["user_id"]}) or {}
+                await _tg_retry(lambda: bot.send_message(
+                    target, info_text(u.get("full_name"), u.get("username"), st["user_id"]),
+                    parse_mode="HTML", reply_to_message_id=m.message_id,
+                    allow_sending_without_reply=True, disable_notification=True))
+                await asyncio.sleep(3.1)
+                sent += 1
+            except Exception as e:
+                failed += 1
+                logger.warning(f"migrate failed for {st.get('user_id')}: {e}")
+            if (sent + failed) % 25 == 0:
+                try:
+                    await bot.send_message(report_chat, f"🚚 تقدم النقل: {sent + failed}/{total}")
+                except Exception:
+                    pass
+    finally:
+        await bot.send_message(
+            report_chat, f"✅ انتهى النقل.\nانرسل: {sent}\nفشل: {failed}\nالمجموع: {total}"
+        )
+
+
 async def remove_from_lists(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/remove ID : يحذف الشخص من قوائم البوت فقط. القناة ما تنمس."""
     if not await has_perm(update.effective_user, "delete"):
@@ -1010,12 +1164,16 @@ async def build_panel(user):
 
     if not rows:
         text += "\n\nما عندك صلاحيات حالياً، راجع المطور."
+    text += "\n\n🔎 بحث: <code>/find كلمة</code>"
+    if "migrate" in perms:
+        text += "\n🚚 نقل المنشورات لقناة: <code>/migrate -100123...</code>"
     if "ban" in perms:
         text += "\n\n🚫 الحظر: <code>/ban ID</code> | <code>/unban ID</code>"
     if "delete" in perms:
         text += "\n🗑 حذف طلب: <code>/delete ID</code>"
         text += "\n🧹 حذف كل ما قبل تاريخ: <code>/delete_before 2026-10-20</code>"
         text += "\n🗂 حذف شخص من القوائم فقط: <code>/remove ID</code>"
+
     if "report" in perms:
         text += "\n📋 <code>/report</code>"
     if "export" in perms:
@@ -1180,7 +1338,11 @@ async def resolve_edit(query, context, uid, approve):
         f"{status}"
     )
     try:
-        await query.edit_message_caption(caption=caption, parse_mode="HTML", reply_markup=None)
+        await query.edit_message_caption(
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[btn("🗑 حذف", "rmreq")]]),
+        )
     except Exception as e:
         logger.warning(f"edit request caption: {e}")
 
@@ -1190,6 +1352,19 @@ async def resolve_edit(query, context, uid, approve):
         await context.bot.send_message(uid, conf[notify_key])
     except Exception as e:
         logger.warning(f"notify student failed: {e}")
+
+
+async def remove_request_msg(query, context):
+    """يحذف رسالة طلب التعديل (بعد البت بيها) فقط. منشور الطالب ما ينمس."""
+    user = query.from_user
+    if not await is_admin(user) or not await has_perm(user, "delete"):
+        await query.answer("⛔ ما عندك صلاحية الحذف.", show_alert=True)
+        return
+    try:
+        await query.message.delete()
+        await query.answer("تم الحذف 🗑")
+    except Exception as e:
+        await query.answer(f"❌ تعذر الحذف: {e}", show_alert=True)
 
 
 async def channel_buttons(query, context, data):
@@ -1275,6 +1450,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith(("ok_", "no_")):
         await channel_buttons(query, context, data)
+        return
+
+    if data == "rmreq":
+        await remove_request_msg(query, context)
         return
 
     if data in ("cf_ok", "cf_no"):
@@ -1364,6 +1543,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await deny()
         await set_config("total_received", 0)
         await safe_edit(query, "✅ تم تصفير الإحصائيات.", None)
+
+    elif data.startswith("migrate_go_"):
+        if "migrate" not in perms:
+            return await deny()
+        if context.bot_data.get("migrating"):
+            await query.message.reply_text("⏳ يوجد نقل شغّال حالياً.")
+            return
+        try:
+            target = int(data.rsplit("_", 1)[1])
+        except ValueError:
+            return
+        context.bot_data["migrating"] = True
+        await safe_edit(query, "🚚 بدأ النقل... راح أبلغك بالتقدم.", None)
+
+        async def _job():
+            try:
+                await run_migration(context.bot, target, query.message.chat_id)
+            finally:
+                context.bot_data["migrating"] = False
+
+        context.application.create_task(_job())
 
     elif data == "reset_cancel":
         await safe_edit(query, "تم الإلغاء.", None)
@@ -1953,6 +2153,8 @@ def main():
     application.add_handler(CommandHandler("delete", delete_request, filters=private))
     application.add_handler(CommandHandler("export", export_command, filters=private))
     application.add_handler(CommandHandler("remove", remove_from_lists, filters=private))
+    application.add_handler(CommandHandler("find", find_command, filters=private))
+    application.add_handler(CommandHandler("migrate", migrate_command, filters=private))
     application.add_handler(CommandHandler("delete_before", delete_before_cmd, filters=private))
     application.add_handler(CommandHandler("report", report_command, filters=private))
     application.add_handler(CallbackQueryHandler(button_handler))
