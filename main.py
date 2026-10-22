@@ -16,6 +16,7 @@ from telegram import (
     InlineKeyboardMarkup,
     InputMediaPhoto,
     InputMediaDocument,
+    LinkPreviewOptions,
 )
 from telegram.error import BadRequest, RetryAfter
 from telegram.ext import (
@@ -26,6 +27,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
     filters,
+    Defaults,
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -158,6 +160,10 @@ DEFAULT_CONFIG = {
     "report_enabled": False,   # التقرير اليومي للقناة
     "report_time": "22:00",    # وقت التقرير (توقيت العراق)
     "report_last_date": None,
+    "alert_enabled": True,        # تنبيهات الرسائل/الستارت المكرر (للمالك)
+    "alert_channel_id": None,     # قناة التنبيهات
+    "alert_msg_dest": "dm",       # dm | channel  (تنبيهات الرسائل)
+    "alert_start_dest": "dm",     # dm | channel  (تنبيهات الستارت)
     **DEFAULT_MESSAGES,
 }
 
@@ -287,6 +293,45 @@ def who_is(user):
 # ============================================================
 # المستخدمين + إشعار المالك عند أول ستارت
 # ============================================================
+async def send_alert(bot, kind, text, photo_id=None, no_photo_suffix=""):
+    """يرسل تنبيه للمالك: للخاص أو لقناة التنبيهات حسب الإعدادات. kind = msg | start"""
+    conf = await get_config()
+    dest = conf["alert_msg_dest"] if kind == "msg" else conf["alert_start_dest"]
+    targets = []
+    if dest == "channel" and conf.get("alert_channel_id"):
+        targets.append(conf["alert_channel_id"])
+    if conf.get("owner_id"):
+        targets.append(conf["owner_id"])  # احتياط إذا فشل الإرسال للقناة
+    for chat_id in targets:
+        try:
+            if photo_id:
+                await bot.send_photo(chat_id, photo_id, caption=text, parse_mode="HTML")
+            else:
+                await bot.send_message(chat_id, text + no_photo_suffix, parse_mode="HTML")
+            return
+        except Exception as e:
+            logger.error(f"alert send failed ({chat_id}): {e}")
+
+
+async def maybe_alert(context, user, kind):
+    """تنبيه مختصر للمالك (رسالة جديدة / ستارت مكرر). إشعار واحد لكل شخص كل 3 دقايق."""
+    if is_owner(user):
+        return
+    conf = await get_config()
+    if not conf.get("alert_enabled"):
+        return
+    last = context.bot_data.setdefault("alert_last", {})
+    now = time.monotonic()
+    if now - last.get(user.id, -1e9) < 180:
+        return
+    last[user.id] = now
+    if kind == "msg":
+        text = f"💬 {who_is(user)} أرسل رسالة للبوت"
+    else:
+        text = f"🔁 {who_is(user)} ضغط ستارت"
+    await send_alert(context.bot, kind, text)
+
+
 async def notify_owner_new_user(user, context):
     photo_id = None
     try:
@@ -299,11 +344,6 @@ async def notify_owner_new_user(user, context):
     if photo_id:
         await db.users.update_one({"user_id": user.id}, {"$set": {"profile_photo": photo_id}})
 
-    conf = await get_config()
-    owner_id = conf.get("owner_id")
-    if not owner_id:
-        return
-
     username = f"@{user.username}" if user.username else "لا يوجد"
     text = (
         "🆕 <b>مستخدم جديد ضغط ستارت</b>\n"
@@ -311,13 +351,7 @@ async def notify_owner_new_user(user, context):
         f"🔗 اليوزر: {username}\n"
         f"🆔 الآيدي: <code>{user.id}</code>"
     )
-    try:
-        if photo_id:
-            await context.bot.send_photo(owner_id, photo_id, caption=text, parse_mode="HTML")
-        else:
-            await context.bot.send_message(owner_id, text + "\n🖼 الصورة: لا توجد/مخفية", parse_mode="HTML")
-    except Exception as e:
-        logger.error(f"owner notify failed: {e}")
+    await send_alert(context.bot, "start", text, photo_id, "\n🖼 الصورة: لا توجد/مخفية")
 
 
 async def touch_user(user, context):
@@ -502,7 +536,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await is_banned(user.id):
         return
 
-    await touch_user(user, context)
+    is_new = await touch_user(user, context)
+    if not is_new:
+        await maybe_alert(context, user, "start")
     conf = await get_config()
     admin = await is_admin(user)
 
@@ -1187,6 +1223,34 @@ def fmt_close(conf):
     return ca.astimezone(BAGHDAD).strftime("%Y-%m-%d %H:%M") if ca else None
 
 
+def build_alerts_panel(conf):
+    ch = conf.get("alert_channel_id")
+    dest = {"dm": "الخاص 💬", "channel": "القناة 📡"}
+    text = (
+        "🔔 <b>التنبيهات</b> (للمالك فقط)\n\n"
+        f"الحالة: {'مشغّلة ✅' if conf['alert_enabled'] else 'متوقفة ⏸'}\n"
+        f"القناة: <code>{ch}</code>\n" if ch else
+        "🔔 <b>التنبيهات</b> (للمالك فقط)\n\n"
+        f"الحالة: {'مشغّلة ✅' if conf['alert_enabled'] else 'متوقفة ⏸'}\n"
+        "القناة: غير محددة\n"
+    )
+    text += (
+        f"تنبيهات الرسائل → {dest[conf['alert_msg_dest']]}\n"
+        f"تنبيهات الستارت → {dest[conf['alert_start_dest']]}\n\n"
+        "• الرسائل والستارت المكرر: إشعار واحد لكل شخص كل 3 دقايق.\n"
+        "• أول ستارت للشخص يوصل دائماً بمعلوماته الكاملة."
+    )
+    rows = [
+        [btn("⏸ إيقاف التنبيهات" if conf["alert_enabled"] else "▶️ تشغيل التنبيهات", "al_toggle")],
+        [btn("📡 تحديد قناة التنبيهات", "al_channel")],
+        [btn(f"✉️ تنبيهات الرسائل: {dest[conf['alert_msg_dest']]}", "al_msg_dest")],
+        [btn(f"▶️ تنبيهات الستارت: {dest[conf['alert_start_dest']]}", "al_start_dest")],
+        [btn("🧪 تجربة القناة", "al_test")],
+        [btn("🔙 رجوع", "panel")],
+    ]
+    return text, InlineKeyboardMarkup(rows)
+
+
 async def build_panel(user):
     conf = await get_config()
     perms = await perms_of(user)
@@ -1254,6 +1318,7 @@ async def build_panel(user):
         rows.append([btn("📋 تقرير الآن (للقناة)", "report_now")])
         rows.append([btn("⏰ وقت التقرير", "report_time")])
     if owner:
+        rows.append([btn("🔔 التنبيهات", "alerts")])
         rows.append([btn("👥 المشرفين وصلاحياتهم", "adm_list")])
 
     if not rows:
@@ -1818,6 +1883,48 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
+    elif data == "alerts":
+        if not is_owner(user):
+            return await deny()
+        text, markup = build_alerts_panel(await get_config())
+        await safe_edit(query, text, markup)
+
+    elif data in ("al_toggle", "al_msg_dest", "al_start_dest"):
+        if not is_owner(user):
+            return await deny()
+        conf = await get_config()
+        if data == "al_toggle":
+            await set_config("alert_enabled", not conf["alert_enabled"])
+        else:
+            key = "alert_msg_dest" if data == "al_msg_dest" else "alert_start_dest"
+            await set_config(key, "channel" if conf[key] == "dm" else "dm")
+        text, markup = build_alerts_panel(await get_config())
+        await safe_edit(query, text, markup)
+
+    elif data == "al_channel":
+        if not is_owner(user):
+            return await deny()
+        context.user_data["admin_state"] = "alert_channel"
+        await query.message.reply_text(
+            "📡 ارسل آيدي قناة التنبيهات (مثال: <code>-1001234567890</code>)\n"
+            "البوت لازم يكون مشرف بالقناة.\n"
+            "لمسح القناة ارسل: <code>-</code>\n(للإلغاء ارسل: الغاء)",
+            parse_mode="HTML",
+        )
+
+    elif data == "al_test":
+        if not is_owner(user):
+            return await deny()
+        ch = (await get_config()).get("alert_channel_id")
+        if not ch:
+            await query.answer("حدد قناة التنبيهات أولاً.", show_alert=True)
+            return
+        try:
+            await context.bot.send_message(ch, "🧪 تجربة: قناة التنبيهات شغالة ✅")
+            await query.answer("انرسلت رسالة التجربة ✅", show_alert=True)
+        except Exception as e:
+            await query.answer(f"❌ فشل الإرسال: {e}", show_alert=True)
+
     elif data == "tg_ping":
         if "ping" not in perms:
             return await deny()
@@ -1979,6 +2086,37 @@ async def handle_admin_state(update, context, user, state):
         await set_config(key, new_text)
         context.user_data["admin_state"] = None
         await msg.reply_text("✅ تم تغيير الرسالة، تظهر للطلاب فوراً." if new_text else "✅ صار البوت يتجاهل الأمر بصمت.")
+
+    elif state == "alert_channel":
+        if not is_owner(user):
+            context.user_data["admin_state"] = None
+            await msg.reply_text("⛔ ما عندك صلاحية.")
+            return
+        raw = (msg.text or "").strip()
+        if raw == "-":
+            await set_config("alert_channel_id", None)
+            context.user_data["admin_state"] = None
+            await msg.reply_text("✅ انمسحت قناة التنبيهات، التنبيهات ترجع للخاص.")
+            return
+        try:
+            cid = int(raw)
+        except ValueError:
+            await msg.reply_text("❌ الآيدي غير صحيح. مثال: -1001234567890")
+            return
+        if cid == CHANNEL_ID:
+            await msg.reply_text("❌ هذي القناة الأصلية، حدد قناة ثانية.")
+            return
+        try:
+            chat = await context.bot.get_chat(cid)
+            me = await context.bot.get_chat_member(cid, context.bot.id)
+            if me.status not in ("administrator", "creator"):
+                raise ValueError("البوت مو مشرف بالقناة")
+        except Exception as e:
+            await msg.reply_text(f"❌ ما كدرت أوصل للقناة: {e}")
+            return
+        await set_config("alert_channel_id", cid)
+        context.user_data["admin_state"] = None
+        await msg.reply_text(f"✅ انحفظت قناة التنبيهات: {chat.title or cid}\nجرّبها من زر «🧪 تجربة القناة».")
 
     elif state == "ping_interval":
         if not await has_perm(user, "ping"):
@@ -2207,7 +2345,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or await is_banned(user.id):
         return
 
-    await touch_user(user, context)
+    is_new = await touch_user(user, context)
+    if not is_new:
+        await maybe_alert(context, user, "msg")
 
     admin_state = context.user_data.get("admin_state")
     if admin_state and await is_admin(user):
@@ -2325,7 +2465,16 @@ def main():
         return
 
     start_health_server()
-    application = Application.builder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
+    # نوقف معاينة الروابط لكل رسائل البوت (الرابط يبقى ينضغط عليه)
+    defaults = Defaults(link_preview_options=LinkPreviewOptions(is_disabled=True))
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .defaults(defaults)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
 
     private = filters.ChatType.PRIVATE
     application.add_handler(CommandHandler("start", start, filters=private))
